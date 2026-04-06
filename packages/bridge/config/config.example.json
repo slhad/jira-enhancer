@@ -1,0 +1,8 @@
+{
+  "mappings": {
+    "PROJ": "/home/user/repos/my-project",
+    "WEB": "/home/user/repos/frontend"
+  },
+  "defaultProvider": "opencode",
+  "timeout": 120000
+}
