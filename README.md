@@ -217,6 +217,44 @@ The scripts:
 
 ---
 
+## AI AGENT: guided local install checklist
+
+When helping a user install the extension, an AI coding agent should follow this sequence:
+
+1. **Protect private data first**
+   - Never commit private Jira domains, customer names, issue text, tokens, or local repo paths.
+   - Put user-specific Jira domains in the gitignored `.env` via `ALLOWED_SITES`.
+   - Put project-key-to-repo mappings in the gitignored `packages/bridge/config.json`.
+
+2. **Collect only the required local inputs**
+   - Jira domain patterns to allow, for example `jira.example.com` or `https://*.example.atlassian.net/*`.
+   - Jira project key mappings, for example `PROJ -> /absolute/path/to/repo`.
+   - Preferred provider: `opencode` or `pi`.
+
+3. **Run the installer once to configure and build**
+   - Linux/macOS: `scripts/install-unix.sh`
+   - Windows: `powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1`
+   - Accept the default domains unless the user explicitly gives private domains.
+   - Save domains to `.env` when the user wants repeatable local builds.
+
+4. **Guide the user through Chrome UI steps**
+   - Ask the user to open `chrome://extensions`.
+   - Enable **Developer mode**.
+   - Load unpacked extension from `packages/extension/dist`.
+   - Ask the user to copy the generated extension ID.
+
+5. **Install the native messaging host with the extension ID**
+   - Linux/macOS: `scripts/install-unix.sh --extension-id <EXTENSION_ID>`
+   - Windows: `powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -ExtensionId <EXTENSION_ID>`
+
+6. **Verify the install**
+   - Reload the extension in `chrome://extensions`.
+   - Open an allowed Jira issue page.
+   - Confirm the popup can reach the native bridge and list/configure providers.
+   - If native messaging fails, rerun the installer with the same extension ID and verify `packages/bridge/dist/index.js` exists.
+
+---
+
 ## Development
 
 ### Commands
