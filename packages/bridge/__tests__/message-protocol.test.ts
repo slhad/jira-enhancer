@@ -1,5 +1,5 @@
 import { PassThrough } from 'node:stream';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { NativeMessagingProtocol } from '../src/message-protocol.js';
 import { ErrorCode, MessageType } from '@jira-enhancer/shared';
 import type { BridgeMessage, ExtensionMessage } from '@jira-enhancer/shared';
@@ -151,6 +151,72 @@ describe('NativeMessagingProtocol', () => {
 
     const received3 = await protocol.readMessage();
     expect(received3).toEqual(messages[2]);
+  });
+
+  it('waits for partial messages to complete', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    protocol = new NativeMessagingProtocol(input, output);
+    const msg: BridgeMessage = { type: MessageType.CANCEL, id: 'partial' };
+    const encoded = encodeMessage(msg);
+
+    const promise = protocol.readMessage();
+    input.write(encoded.subarray(0, 3));
+    input.write(encoded.subarray(3));
+
+    await expect(promise).resolves.toEqual(msg);
+  });
+
+  it('rejects when stream ends or errors before a message is complete', async () => {
+    let input = new PassThrough();
+    let output = new PassThrough();
+    protocol = new NativeMessagingProtocol(input, output);
+    const ended = protocol.readMessage();
+    input.end();
+    await expect(ended).rejects.toMatchObject({ code: ErrorCode.INVALID_MESSAGE });
+
+    input = new PassThrough();
+    output = new PassThrough();
+    protocol = new NativeMessagingProtocol(input, output);
+    const errored = protocol.readMessage();
+    input.emit('error', new Error('broken'));
+    await expect(errored).rejects.toMatchObject({ code: ErrorCode.INVALID_MESSAGE });
+  });
+
+  it('throws when closed or sending an oversized response', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    protocol = new NativeMessagingProtocol(input, output);
+
+    protocol.close();
+    await expect(protocol.readMessage()).rejects.toMatchObject({ code: ErrorCode.INVALID_MESSAGE });
+    expect(() =>
+      protocol.sendMessage({ type: MessageType.STATUS, id: 'x', status: 'processing' }),
+    ).toThrow();
+
+    protocol = new NativeMessagingProtocol(input, output);
+    expect(() =>
+      protocol.sendMessage({
+        type: MessageType.ERROR,
+        id: 'large',
+        code: 'BIG',
+        message: 'x'.repeat(1024 * 1024),
+      }),
+    ).toThrow();
+  });
+
+  it('runs the onMessage loop until the stream ends', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    protocol = new NativeMessagingProtocol(input, output);
+    const handler = vi.fn().mockResolvedValue(undefined);
+
+    protocol.onMessage(handler);
+    input.write(encodeMessage({ type: MessageType.CANCEL, id: 'loop' }));
+    await vi.waitFor(() =>
+      expect(handler).toHaveBeenCalledWith({ type: MessageType.CANCEL, id: 'loop' }),
+    );
+    input.end();
   });
 
   it('should reject empty/zero-length message', async () => {

@@ -7,36 +7,82 @@ export interface SpawnResult {
   exitCode: number;
 }
 
+export interface SpawnStreamController {
+  writeStdin: (input: string) => void;
+  endStdin: () => void;
+}
+
+export interface SpawnStreamHandlers {
+  /** Return true to signal that stdout produced enough data to finish. */
+  onStdout?: (chunk: string, controller: SpawnStreamController) => boolean | void;
+  onStderr?: (chunk: string) => void;
+  keepStdinOpen?: boolean;
+  /** Resolve successfully as soon as onStdout returns true, then terminate the child. */
+  resolveOnStdoutSignal?: boolean;
+}
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 const SIGKILL_DELAY_MS = 5_000;
 
 export class ProcessManager {
   private activeProcesses = new Map<number, ChildProcess>();
 
-  spawn(
+  private spawnTracked(
     command: string,
     args: string[],
     input?: string,
-  ): Promise<SpawnResult> {
-    return new Promise((resolve, reject) => {
-      const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    env?: Record<string, string>,
+    cwd?: string,
+    streamHandlers?: SpawnStreamHandlers,
+  ): { child: ChildProcess; promise: Promise<SpawnResult> } {
+    const child = spawn(command, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: env ? { ...process.env, ...env } : process.env,
+      ...(cwd ? { cwd } : {}),
+    });
 
-      if (child.pid !== undefined) {
-        this.activeProcesses.set(child.pid, child);
-      }
+    if (child.pid !== undefined) {
+      this.activeProcesses.set(child.pid, child);
+    }
 
+    const promise = new Promise<SpawnResult>((resolve, reject) => {
       let stdout = '';
       let stderr = '';
+      let settled = false;
 
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString();
+      const finishEarly = () => {
+        if (settled) return;
+        settled = true;
+        if (child.pid !== undefined) {
+          this.activeProcesses.delete(child.pid);
+        }
+        child.kill('SIGTERM');
+        resolve({ stdout, stderr, exitCode: 0 });
+      };
+
+      const streamController: SpawnStreamController = {
+        writeStdin: (input: string) => child.stdin?.write(input),
+        endStdin: () => child.stdin?.end(),
+      };
+
+      child.stdout?.on('data', (chunk: Buffer) => {
+        const text = chunk.toString();
+        stdout += text;
+        if (streamHandlers?.onStdout?.(text, streamController) === true) {
+          child.stdin?.end();
+          if (streamHandlers.resolveOnStdoutSignal) finishEarly();
+        }
       });
 
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString();
+      child.stderr?.on('data', (chunk: Buffer) => {
+        const text = chunk.toString();
+        stderr += text;
+        streamHandlers?.onStderr?.(text);
       });
 
       child.on('error', (err) => {
+        if (settled) return;
+        settled = true;
         if (child.pid !== undefined) {
           this.activeProcesses.delete(child.pid);
         }
@@ -49,6 +95,8 @@ export class ProcessManager {
       });
 
       child.on('close', (code) => {
+        if (settled) return;
+        settled = true;
         if (child.pid !== undefined) {
           this.activeProcesses.delete(child.pid);
         }
@@ -70,9 +118,23 @@ export class ProcessManager {
 
       if (input !== undefined && child.stdin) {
         child.stdin.write(input);
-        child.stdin.end();
+        if (!streamHandlers?.keepStdinOpen) {
+          child.stdin.end();
+        }
       }
     });
+
+    return { child, promise };
+  }
+
+  spawn(
+    command: string,
+    args: string[],
+    input?: string,
+    env?: Record<string, string>,
+    cwd?: string,
+  ): Promise<SpawnResult> {
+    return this.spawnTracked(command, args, input, env, cwd).promise;
   }
 
   async spawnWithTimeout(
@@ -80,7 +142,12 @@ export class ProcessManager {
     args: string[],
     input?: string,
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
+    env?: Record<string, string>,
+    cwd?: string,
+    streamHandlers?: SpawnStreamHandlers,
   ): Promise<SpawnResult> {
+    const { child, promise } = this.spawnTracked(command, args, input, env, cwd, streamHandlers);
+
     return new Promise<SpawnResult>((resolve, reject) => {
       let settled = false;
 
@@ -88,8 +155,12 @@ export class ProcessManager {
         if (settled) return;
         settled = true;
 
-        // Kill all active processes matching this spawn
-        // We need to track the specific child, so we wrap spawn inline
+        if (child.pid !== undefined) {
+          this.kill(child.pid);
+        } else {
+          child.kill('SIGTERM');
+        }
+
         reject(
           new BridgeError(
             ErrorCode.LLM_TIMEOUT,
@@ -98,23 +169,19 @@ export class ProcessManager {
         );
       }, timeoutMs);
 
-      this.spawn(command, args, input)
+      promise
         .then((result) => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
           resolve(result);
         })
-        .catch((err) => {
+        .catch((err: unknown) => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
           reject(err);
         });
-
-      // We also need to kill the child on timeout — find it by looking at the
-      // most recently added process. This is a slight simplification; for a
-      // more robust approach we'd refactor spawn() to return the child handle.
     });
   }
 

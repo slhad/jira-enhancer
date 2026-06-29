@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite build --watch",
     "build": "vite build",
-    "test": "vitest run",
-    "lint": "eslint src/"
+    "test": "vitest run --coverage",
+    "lint": "eslint src/ __tests__/",
+    "format:check": "prettier --check src __tests__ package.json"
   },
   "dependencies": {
     "@jira-enhancer/shared": "workspace:*",

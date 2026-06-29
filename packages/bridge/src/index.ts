@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   for (;;) {
     try {
       const msg = await protocol.readMessage();
-      const response = await handler.handleMessage(msg);
+      const response = await handler.handleMessage(msg, (event) => protocol.sendMessage(event));
       protocol.sendMessage(response);
     } catch (err) {
       // Stream closed or read error — exit cleanly

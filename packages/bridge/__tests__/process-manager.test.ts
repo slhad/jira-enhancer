@@ -32,9 +32,10 @@ function createMockChild(pid = 1234): {
   Object.defineProperty(child, 'stdout', { value: stdout });
   Object.defineProperty(child, 'stderr', { value: stderr });
   Object.defineProperty(child, 'stdin', { value: stdin });
-  (child as any).killed = false;
-  (child as any).kill = vi.fn(() => {
-    (child as any).killed = true;
+  const mutableChild = child as ChildProcess & { killed: boolean; kill: ReturnType<typeof vi.fn> };
+  mutableChild.killed = false;
+  mutableChild.kill = vi.fn(() => {
+    mutableChild.killed = true;
     return true;
   });
 
@@ -43,8 +44,8 @@ function createMockChild(pid = 1234): {
     stdout,
     stderr,
     stdin,
-    emitClose: (code: number) => (child as EventEmitter).emit('close', code),
-    emitError: (err: Error) => (child as EventEmitter).emit('error', err),
+    emitClose: (code: number) => (child as unknown as EventEmitter).emit('close', code),
+    emitError: (err: Error) => (child as unknown as EventEmitter).emit('error', err),
     emitStdout: (data: string) => stdout.emit('data', Buffer.from(data)),
     emitStderr: (data: string) => stderr.emit('data', Buffer.from(data)),
   };
@@ -83,6 +84,22 @@ describe('ProcessManager', () => {
       });
       expect(mockSpawn).toHaveBeenCalledWith('echo', ['hello'], {
         stdio: ['pipe', 'pipe', 'pipe'],
+        env: process.env,
+      });
+    });
+
+    it('passes env and cwd options to spawn', async () => {
+      const mock = createMockChild();
+      mockSpawn.mockReturnValue(mock.child);
+
+      const promise = pm.spawn('pwd', [], undefined, { EXTRA: '1' }, '/tmp/project');
+      mock.emitClose(0);
+      await promise;
+
+      expect(mockSpawn).toHaveBeenCalledWith('pwd', [], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, EXTRA: '1' },
+        cwd: '/tmp/project',
       });
     });
 
@@ -150,6 +167,75 @@ describe('ProcessManager', () => {
       });
     });
 
+    it('keeps stdin open and exposes a stream controller', async () => {
+      const mock = createMockChild();
+      mockSpawn.mockReturnValue(mock.child);
+      const chunks: string[] = [];
+
+      const promise = pm.spawnWithTimeout('interactive', [], 'hello', 5000, undefined, undefined, {
+        keepStdinOpen: true,
+        onStdout: (_chunk, controller) => {
+          controller.writeStdin('next');
+          controller.endStdin();
+          chunks.push(_chunk);
+        },
+        onStderr: (chunk) => chunks.push(chunk),
+      });
+
+      mock.emitStdout('out');
+      mock.emitStderr('err');
+      mock.emitClose(0);
+      await promise;
+
+      expect(mock.stdin.write).toHaveBeenCalledWith('hello');
+      expect(mock.stdin.write).toHaveBeenCalledWith('next');
+      expect(mock.stdin.end).toHaveBeenCalledTimes(1);
+      expect(chunks).toEqual(['out', 'err']);
+    });
+
+    it('ends stdin when empty input is provided', async () => {
+      const mock = createMockChild();
+      mockSpawn.mockReturnValue(mock.child);
+
+      const promise = pm.spawnWithTimeout('no-input', [], '', 5000);
+      mock.emitClose(0);
+      await promise;
+
+      expect(mock.stdin.end).toHaveBeenCalled();
+    });
+
+    it('resolves early when stdout handler signals completion', async () => {
+      const mock = createMockChild();
+      mockSpawn.mockReturnValue(mock.child);
+
+      const promise = pm.spawnWithTimeout('streaming', [], undefined, 5000, undefined, undefined, {
+        resolveOnStdoutSignal: true,
+        onStdout: (chunk) => chunk.includes('done'),
+      });
+
+      mock.emitStdout('done\n');
+
+      const result = await promise;
+
+      expect(result.stdout).toBe('done\n');
+      expect(result.exitCode).toBe(0);
+      expect(mock.child.kill).toHaveBeenCalledWith('SIGTERM');
+    });
+
+    it('does not resolve early without resolveOnStdoutSignal', async () => {
+      const mock = createMockChild();
+      mockSpawn.mockReturnValue(mock.child);
+
+      const promise = pm.spawnWithTimeout('streaming', [], undefined, 5000, undefined, undefined, {
+        onStdout: () => true,
+      });
+
+      mock.emitStdout('done');
+      expect(mock.child.kill).not.toHaveBeenCalled();
+      mock.emitClose(0);
+      await expect(promise).resolves.toMatchObject({ stdout: 'done' });
+    });
+
     it('rejects with LLM_TIMEOUT when process exceeds timeout', async () => {
       const mock = createMockChild();
       mockSpawn.mockReturnValue(mock.child);
@@ -162,6 +248,7 @@ describe('ProcessManager', () => {
       await expect(promise).rejects.toMatchObject({
         code: ErrorCode.LLM_TIMEOUT,
       });
+      expect(mock.child.kill).toHaveBeenCalledWith('SIGTERM');
     });
   });
 
@@ -178,6 +265,28 @@ describe('ProcessManager', () => {
       expect(mock.child.kill).toHaveBeenCalledWith('SIGTERM');
 
       // Clean up - emit close so the promise settles
+      mock.emitClose(1);
+      await promise.catch(() => {});
+    });
+
+    it('sends SIGKILL if a process ignores SIGTERM', async () => {
+      const mock = createMockChild(7777);
+      const mutable = mock.child as ChildProcess & {
+        killed: boolean;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      mutable.kill = vi.fn((signal?: NodeJS.Signals) => {
+        if (signal === 'SIGKILL') mutable.killed = true;
+        return true;
+      });
+      mockSpawn.mockReturnValue(mock.child);
+      const promise = pm.spawn('stubborn', []);
+
+      pm.kill(7777);
+      vi.advanceTimersByTime(5001);
+
+      expect(mutable.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(mutable.kill).toHaveBeenCalledWith('SIGKILL');
       mock.emitClose(1);
       await promise.catch(() => {});
     });

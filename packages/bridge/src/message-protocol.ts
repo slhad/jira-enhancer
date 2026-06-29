@@ -30,12 +30,7 @@ export class NativeMessagingProtocol {
 
         if (length <= 0 || length > MAX_MESSAGE_SIZE) {
           cleanup();
-          reject(
-            new BridgeError(
-              ErrorCode.INVALID_MESSAGE,
-              `Invalid message length: ${length}`,
-            ),
-          );
+          reject(new BridgeError(ErrorCode.INVALID_MESSAGE, `Invalid message length: ${length}`));
           return true;
         }
 
@@ -49,9 +44,7 @@ export class NativeMessagingProtocol {
           parsed = JSON.parse(jsonBytes.toString('utf-8'));
         } catch {
           cleanup();
-          reject(
-            new BridgeError(ErrorCode.INVALID_MESSAGE, 'Malformed JSON in message'),
-          );
+          reject(new BridgeError(ErrorCode.INVALID_MESSAGE, 'Malformed JSON in message'));
           return true;
         }
 

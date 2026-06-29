@@ -6,12 +6,16 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" }
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
   },
   "scripts": {
     "build": "tsc --build",
-    "test": "vitest run",
-    "lint": "eslint src/"
+    "test": "vitest run --coverage",
+    "lint": "eslint src/ __tests__/",
+    "format:check": "prettier --check src __tests__ package.json"
   },
   "devDependencies": {
     "typescript": "^5.5.0"

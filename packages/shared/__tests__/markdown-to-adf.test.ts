@@ -13,9 +13,7 @@ describe('markdownToAdf', () => {
     expect(result.type).toBe('doc');
     expect(result.content).toHaveLength(1);
     expect(result.content[0].type).toBe('paragraph');
-    expect(result.content[0].content).toEqual([
-      { type: 'text', text: 'Hello world' },
-    ]);
+    expect(result.content[0].content).toEqual([{ type: 'text', text: 'Hello world' }]);
   });
 
   it('heading parsing', () => {
@@ -41,9 +39,7 @@ describe('markdownToAdf', () => {
     expect(list.type).toBe('bulletList');
     expect(list.content).toHaveLength(2);
     expect(list.content![0].type).toBe('listItem');
-    expect(list.content![0].content![0].content).toEqual([
-      { type: 'text', text: 'Item A' },
-    ]);
+    expect(list.content![0].content![0].content).toEqual([{ type: 'text', text: 'Item A' }]);
   });
 
   it('ordered list', () => {
@@ -142,16 +138,12 @@ console.log("hi");
 
 describe('parseInlineMarks', () => {
   it('plain text returns single text node', () => {
-    expect(parseInlineMarks('hello')).toEqual([
-      { type: 'text', text: 'hello' },
-    ]);
+    expect(parseInlineMarks('hello')).toEqual([{ type: 'text', text: 'hello' }]);
   });
 
   it('parses bold', () => {
     const result = parseInlineMarks('**bold**');
-    expect(result).toEqual([
-      { type: 'text', text: 'bold', marks: [{ type: 'strong' }] },
-    ]);
+    expect(result).toEqual([{ type: 'text', text: 'bold', marks: [{ type: 'strong' }] }]);
   });
 
   it('parses inline code', () => {
@@ -166,8 +158,6 @@ describe('parseInlineMarks', () => {
 
   it('parses strikethrough', () => {
     const result = parseInlineMarks('~~deleted~~');
-    expect(result).toEqual([
-      { type: 'text', text: 'deleted', marks: [{ type: 'strike' }] },
-    ]);
+    expect(result).toEqual([{ type: 'text', text: 'deleted', marks: [{ type: 'strike' }] }]);
   });
 });

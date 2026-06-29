@@ -4,11 +4,14 @@
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
-  "bin": { "jira-enhancer-bridge": "./dist/index.js" },
+  "bin": {
+    "jira-enhancer-bridge": "./dist/index.js"
+  },
   "scripts": {
     "build": "tsc --build",
-    "test": "vitest run",
-    "lint": "eslint src/",
+    "test": "vitest run --coverage",
+    "lint": "eslint src/ __tests__/",
+    "format:check": "prettier --check src __tests__ package.json",
     "start": "node dist/index.js"
   },
   "dependencies": {

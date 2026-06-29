@@ -1,7 +1,7 @@
 {
   "name": "com.jira_enhancer.bridge",
   "description": "Jira Enhancer Native Messaging Bridge",
-  "path": "/usr/local/bin/jira-enhancer-bridge",
+  "path": "BRIDGE_PATH_PLACEHOLDER",
   "type": "stdio",
   "allowed_origins": ["chrome-extension://EXTENSION_ID_PLACEHOLDER/"]
 }

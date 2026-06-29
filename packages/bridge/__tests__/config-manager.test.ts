@@ -59,6 +59,21 @@ describe('ConfigManager', () => {
     expect(fs.existsSync(projectPath)).toBe(true);
   });
 
+  it('throws before config is loaded and returns loaded config', async () => {
+    const configPath = writeValidConfig();
+    const manager = new ConfigManager(configPath);
+
+    expect(() => manager.getConfig()).toThrowError(
+      expect.objectContaining({ code: ErrorCode.CONFIG_ERROR }),
+    );
+    expect(() => manager.getProjectPath('PROJ')).toThrowError(
+      expect.objectContaining({ code: ErrorCode.CONFIG_ERROR }),
+    );
+
+    const config = await manager.load();
+    expect(manager.getConfig()).toBe(config);
+  });
+
   it('should throw PROJECT_NOT_FOUND for unknown key', async () => {
     const configPath = writeValidConfig();
     const manager = new ConfigManager(configPath);
@@ -86,7 +101,37 @@ describe('ConfigManager', () => {
     });
   });
 
+  it('should throw PROJECT_NOT_FOUND when mapped path is missing on disk', async () => {
+    const configPath = writeConfig(
+      'missing-path.json',
+      JSON.stringify({
+        mappings: { PROJ: path.join(tmpDir, 'missing') },
+        defaultProvider: 'pi',
+        timeout: 120000,
+      }),
+    );
+    const manager = new ConfigManager(configPath);
+    await manager.load();
+
+    expect(() => manager.getProjectPath('PROJ')).toThrowError(
+      expect.objectContaining({ code: ErrorCode.PROJECT_NOT_FOUND }),
+    );
+  });
+
   it('should throw CONFIG_ERROR for missing required fields', async () => {
+    await expect(new ConfigManager(writeConfig('null.json', 'null')).load()).rejects.toMatchObject({
+      code: ErrorCode.CONFIG_ERROR,
+    });
+
+    await expect(
+      new ConfigManager(
+        writeConfig(
+          'array-mappings.json',
+          JSON.stringify({ mappings: [], defaultProvider: 'opencode', timeout: 120000 }),
+        ),
+      ).load(),
+    ).rejects.toMatchObject({ code: ErrorCode.CONFIG_ERROR });
+
     // Missing mappings
     const configPath1 = writeConfig(
       'no-mappings.json',

@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { BridgeConfig } from '@jira-enhancer/shared';
 import { BridgeError, ErrorCode } from '@jira-enhancer/shared';
 
@@ -8,7 +9,13 @@ export class ConfigManager {
   private readonly configPath: string;
   private config: BridgeConfig | null = null;
 
-  constructor(configPath: string = path.join(process.cwd(), 'config.json')) {
+  constructor(
+    configPath: string = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      'config.json',
+    ),
+  ) {
     this.configPath = configPath;
   }
 
@@ -39,10 +46,7 @@ export class ConfigManager {
 
   getProjectPath(projectKey: string): string {
     if (!this.config) {
-      throw new BridgeError(
-        ErrorCode.CONFIG_ERROR,
-        'Config not loaded. Call load() first.',
-      );
+      throw new BridgeError(ErrorCode.CONFIG_ERROR, 'Config not loaded. Call load() first.');
     }
 
     const projectPath = this.config.mappings[projectKey];
@@ -65,10 +69,7 @@ export class ConfigManager {
 
   getConfig(): BridgeConfig {
     if (!this.config) {
-      throw new BridgeError(
-        ErrorCode.CONFIG_ERROR,
-        'Config not loaded. Call load() first.',
-      );
+      throw new BridgeError(ErrorCode.CONFIG_ERROR, 'Config not loaded. Call load() first.');
     }
     return this.config;
   }
@@ -95,10 +96,7 @@ export class ConfigManager {
 
     // Validate timeout
     if (typeof obj.timeout !== 'number' || obj.timeout <= 0) {
-      throw new BridgeError(
-        ErrorCode.CONFIG_ERROR,
-        'Config "timeout" must be a positive number',
-      );
+      throw new BridgeError(ErrorCode.CONFIG_ERROR, 'Config "timeout" must be a positive number');
     }
 
     return {

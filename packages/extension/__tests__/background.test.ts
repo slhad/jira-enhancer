@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MessageType } from '@jira-enhancer/shared';
-import type { BridgeMessage, EnhanceRequest, CancelRequest, ExtensionMessage } from '@jira-enhancer/shared';
+import type { EnhanceRequest, CancelRequest, ExtensionMessage } from '@jira-enhancer/shared';
 
 // --- Chrome API mocks ---
 
@@ -55,6 +55,14 @@ function resetChromeMocks() {
     },
     tabs: {
       sendMessage: vi.fn(),
+    },
+    storage: {
+      local: {
+        get: vi.fn((_key: string, callback: (result: Record<string, unknown>) => void) =>
+          callback({}),
+        ),
+        set: vi.fn(),
+      },
     },
   };
 }
@@ -181,6 +189,38 @@ describe('background service worker', () => {
     expect(mockPort.postMessage).toHaveBeenCalledWith(cancel);
   });
 
+  it('acknowledges popup-originated enhancement requests and broadcasts final responses', async () => {
+    await import('../src/background/background.js');
+
+    const request: EnhanceRequest = {
+      type: MessageType.ENHANCE_REQUEST,
+      id: 'popup-1',
+      issueKey: 'PROJ-456',
+      description: 'desc',
+      mode: 'default',
+      provider: 'opencode',
+    };
+    const sendResponse = vi.fn();
+    runtimeOnMessage.fire(request, {}, sendResponse);
+
+    const response: ExtensionMessage = {
+      type: MessageType.ENHANCE_RESPONSE,
+      id: 'popup-1',
+      refinedDescription: 'Improved',
+      originalDescription: 'desc',
+    };
+    expect(sendResponse).toHaveBeenCalledWith({
+      type: MessageType.STATUS,
+      id: 'popup-1',
+      status: 'processing',
+      progress: undefined,
+    });
+
+    portOnMessage.fire(response);
+
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(response);
+  });
+
   it('routes responses from native client to the correct tab', async () => {
     await import('../src/background/background.js');
 
@@ -204,6 +244,182 @@ describe('background service worker', () => {
     portOnMessage.fire(response);
 
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(99, response);
+  });
+
+  it('returns stored enhancement state for matching issue', async () => {
+    const stored = {
+      issueKey: 'K-1',
+      requestId: 'req-state',
+      status: 'processing',
+      progress: 25,
+    };
+    resetChromeMocks();
+    (chrome.storage.local.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (_key: string, callback: (result: Record<string, unknown>) => void) =>
+        callback({ 'jiraEnhancer.enhancementState': stored }),
+    );
+    await import('../src/background/background.js');
+
+    const sendResponse = vi.fn();
+    runtimeOnMessage.fire(
+      { type: MessageType.GET_ENHANCEMENT_STATE, issueKey: 'K-1' },
+      {},
+      sendResponse,
+    );
+
+    expect(sendResponse).toHaveBeenCalledWith({ type: MessageType.ENHANCEMENT_STATE, ...stored });
+  });
+
+  it('returns empty enhancement state for a different issue', async () => {
+    resetChromeMocks();
+    (chrome.storage.local.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (_key: string, callback: (result: Record<string, unknown>) => void) =>
+        callback({
+          'jiraEnhancer.enhancementState': { issueKey: 'OTHER-1', status: 'processing' },
+        }),
+    );
+    await import('../src/background/background.js');
+
+    const sendResponse = vi.fn();
+    runtimeOnMessage.fire(
+      { type: MessageType.GET_ENHANCEMENT_STATE, issueKey: 'K-1' },
+      {},
+      sendResponse,
+    );
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      type: MessageType.ENHANCEMENT_STATE,
+      issueKey: 'K-1',
+    });
+  });
+
+  it('updates stored state for harness events, status, responses, and errors', async () => {
+    let stored: Record<string, unknown> = { requestId: 'req-flow', status: 'processing' };
+    resetChromeMocks();
+    (chrome.storage.local.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (_key: string, callback: (result: Record<string, unknown>) => void) =>
+        callback({ 'jiraEnhancer.enhancementState': stored }),
+    );
+    (chrome.storage.local.set as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (value: Record<string, unknown>) => {
+        stored = value['jiraEnhancer.enhancementState'] as Record<string, unknown>;
+      },
+    );
+    await import('../src/background/background.js');
+
+    const request: EnhanceRequest = {
+      type: MessageType.ENHANCE_REQUEST,
+      id: 'req-flow',
+      issueKey: 'K-1',
+      description: 'desc',
+      mode: 'default',
+      provider: 'opencode',
+    };
+    runtimeOnMessage.fire(request, { tab: { id: 1 } as chrome.tabs.Tab }, vi.fn());
+
+    portOnMessage.fire({
+      type: MessageType.HARNESS_EVENT,
+      id: 'req-flow',
+      timestamp: 1,
+      app: 'pi',
+      kind: 'status',
+      text: 'started',
+    });
+    expect(stored.events).toHaveLength(1);
+
+    portOnMessage.fire({
+      type: MessageType.STATUS,
+      id: 'req-flow',
+      status: 'refining',
+      progress: 50,
+    });
+    expect(stored).toMatchObject({ status: 'refining', progress: 50 });
+
+    portOnMessage.fire({ type: MessageType.ERROR, id: 'req-flow', code: 'X', message: 'boom' });
+    expect(stored).toMatchObject({ status: 'error', error: 'boom', progress: undefined });
+
+    // Re-add pending request because ERROR is final and removes it.
+    runtimeOnMessage.fire(request, { tab: { id: 1 } as chrome.tabs.Tab }, vi.fn());
+    portOnMessage.fire({
+      type: MessageType.ENHANCE_RESPONSE,
+      id: 'req-flow',
+      refinedDescription: 'better',
+      originalDescription: 'desc',
+      originalFields: { description: 'desc' },
+      enhancedFields: { description: 'better' },
+    });
+    expect(stored).toMatchObject({
+      status: 'complete',
+      refinedDescription: 'better',
+      originalDescription: 'desc',
+      error: undefined,
+    });
+  });
+
+  it('broadcasts non-final runtime responses for direct runtime requests', async () => {
+    await import('../src/background/background.js');
+
+    const sendResponse = vi.fn();
+    runtimeOnMessage.fire(
+      { type: MessageType.LIST_MODELS_REQUEST, id: 'runtime-status', app: 'pi' },
+      {},
+      sendResponse,
+    );
+    const status = { type: MessageType.STATUS, id: 'runtime-status', status: 'processing' };
+    portOnMessage.fire(status);
+
+    expect(sendResponse).not.toHaveBeenCalled();
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(status);
+  });
+
+  it('responds to runtime list, save image, and debug requests directly', async () => {
+    await import('../src/background/background.js');
+    for (const [message, response] of [
+      [
+        { type: MessageType.LIST_MODELS_REQUEST, id: 'models', app: 'pi' },
+        { type: MessageType.LIST_MODELS_RESPONSE, id: 'models', app: 'pi', models: [] },
+      ],
+      [
+        { type: MessageType.SAVE_IMAGES_REQUEST, id: 'images', images: [] },
+        { type: MessageType.SAVE_IMAGES_RESPONSE, id: 'images', images: [] },
+      ],
+      [
+        { type: MessageType.DEBUG_LOG_REQUEST, id: 'debug', source: 'test', payload: {} },
+        { type: MessageType.DEBUG_LOG_RESPONSE, id: 'debug', ok: false, path: '' },
+      ],
+    ] as const) {
+      const sendResponse = vi.fn();
+      runtimeOnMessage.fire(message, {}, sendResponse);
+      portOnMessage.fire(response);
+      expect(sendResponse).toHaveBeenCalledWith(response);
+    }
+  });
+
+  it('clears matching enhancement state on cancel', async () => {
+    let stored: Record<string, unknown> = {
+      requestId: 'cancel-me',
+      status: 'processing',
+      error: 'x',
+    };
+    resetChromeMocks();
+    (chrome.storage.local.get as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (_key: string, callback: (result: Record<string, unknown>) => void) =>
+        callback({ 'jiraEnhancer.enhancementState': stored }),
+    );
+    (chrome.storage.local.set as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (value: Record<string, unknown>) => {
+        stored = value['jiraEnhancer.enhancementState'] as Record<string, unknown>;
+      },
+    );
+    await import('../src/background/background.js');
+
+    runtimeOnMessage.fire({ type: MessageType.CANCEL, id: 'cancel-me' }, {}, vi.fn());
+
+    expect(mockPort.postMessage).toHaveBeenCalledWith({
+      type: MessageType.CANCEL,
+      id: 'cancel-me',
+    });
+    expect(stored).toMatchObject({ status: 'idle', progress: undefined, error: undefined });
   });
 
   it('sends error to all pending tabs on native disconnect', async () => {

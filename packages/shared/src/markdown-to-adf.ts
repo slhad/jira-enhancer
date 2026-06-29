@@ -71,7 +71,10 @@ function parseBlocks(lines: string[]): AdfNode[] {
       const innerBlocks = parseBlocks(quoteLines);
       blocks.push({
         type: 'blockquote',
-        content: innerBlocks.length > 0 ? innerBlocks : [{ type: 'paragraph', content: [{ type: 'text', text: '' }] }],
+        content:
+          innerBlocks.length > 0
+            ? innerBlocks
+            : [{ type: 'paragraph', content: [{ type: 'text', text: '' }] }],
       });
       continue;
     }

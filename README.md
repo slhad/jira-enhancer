@@ -2,6 +2,8 @@
 
 An AI-powered productivity tool that refines Jira ticket descriptions by contextualising them against your local codebase. It uses a Chrome Extension as the UI layer, a local Node.js bridge for secure OS access, and either **OpenCode** or **Pi CLI** as the agentic LLM engine.
 
+This README is the project overview and setup/development guide. For the full product and technical behavior specification, see [SPECS.md](./SPECS.md). For coding-agent guidance, see [AGENTS.md](./AGENTS.md).
+
 ---
 
 ## How It Works
@@ -36,11 +38,11 @@ The bridge communicates with Chrome over **stdin/stdout** using the [Chrome Nati
 
 ## Prerequisites
 
-| Requirement | Notes |
-|---|---|
-| Node.js ≥ 20 | Bridge runtime |
-| pnpm ≥ 9 | Package manager (`npm i -g pnpm`) |
-| Chrome / Chromium | Extension host |
+| Requirement                                                        | Notes                               |
+| ------------------------------------------------------------------ | ----------------------------------- |
+| Node.js ≥ 20                                                       | Bridge runtime                      |
+| pnpm ≥ 9                                                           | Package manager (`npm i -g pnpm`)   |
+| Chrome / Chromium                                                  | Extension host                      |
 | [OpenCode](https://opencode.ai) **or** [Pi CLI](https://pi.ai/cli) | Must be installed and authenticated |
 
 ---
@@ -93,8 +95,14 @@ config/
 ├── native-host-manifest.linux.json
 ├── native-host-manifest.macos.json
 └── native-host-manifest.windows.json
+```
+
+Root-level helper scripts:
+
+```text
 scripts/
-└── install-host.sh   # Copies manifest to Chrome's NativeMessagingHosts directory
+├── install-unix.sh        # Builds extension and installs native messaging host on Linux/macOS
+└── install-windows.ps1    # Builds extension and installs native messaging host on Windows
 ```
 
 ### `packages/extension`
@@ -152,31 +160,54 @@ Edit `packages/bridge/config.json` to map your Jira project keys to local repo p
 {
   "mappings": {
     "PROJ": "/home/you/repos/my-project",
-    "WEB":  "/home/you/repos/frontend"
+    "WEB": "/home/you/repos/frontend"
   },
   "defaultProvider": "opencode",
   "timeout": 120000
 }
 ```
 
-| Field | Description |
-|---|---|
-| `mappings` | Object mapping Jira project key prefixes (e.g. `"PROJ"`) to absolute local paths |
-| `defaultProvider` | `"opencode"` or `"pi"` |
-| `timeout` | Max LLM runtime in milliseconds (default 120 000 = 2 minutes) |
+| Field             | Description                                                                      |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `mappings`        | Object mapping Jira project key prefixes (e.g. `"PROJ"`) to absolute local paths |
+| `defaultProvider` | `"opencode"` or `"pi"`                                                           |
+| `timeout`         | Max LLM runtime in milliseconds (default 120 000 = 2 minutes)                    |
 
 ### 4. Install the native messaging host
 
-After building, install the bridge binary and register it with Chrome:
+Use the root-level installer for your OS. The scripts prompt for allowed extension domains, write `ALLOWED_SITES` to the gitignored `.env` if you choose, build the project, and install the Chrome native messaging host when an extension ID is provided.
+
+Linux/macOS:
 
 ```bash
-# Find your extension ID on chrome://extensions after loading it
-bash packages/bridge/scripts/install-host.sh <YOUR_EXTENSION_ID>
+scripts/install-unix.sh
+# After loading packages/extension/dist in chrome://extensions and copying its ID:
+scripts/install-unix.sh --extension-id <YOUR_EXTENSION_ID>
 ```
 
-The script auto-detects Linux vs macOS and copies the manifest to the correct Chrome directory.
+Windows PowerShell:
 
-**Windows:** Manually copy `packages/bridge/config/native-host-manifest.windows.json` to `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.jira_enhancer.bridge` in the registry (value = path to the JSON file).
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+# After loading packages\extension\dist in chrome://extensions and copying its ID:
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -ExtensionId <YOUR_EXTENSION_ID>
+```
+
+By default the scripts use `https://*.atlassian.net/*` and `https://*.jira.com/*`. Add private/local Jira domains only when prompted; they stay in your gitignored `.env` and must not be committed.
+
+The scripts:
+
+- Resolve the bridge path to `packages/bridge/dist/index.js` (no system install needed)
+- Write the native host manifest for the current user
+- On Windows, create a small `.cmd` wrapper under `%LOCALAPPDATA%\JiraEnhancer\NativeMessagingHost` and register it under `HKCU`
+
+| Platform | Manifest directory / registry                                                                                                                                                                      |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux    | `~/.config/google-chrome/NativeMessagingHosts/`                                                                                                                                                    |
+| macOS    | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`                                                                                                                                |
+| Windows  | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.jira_enhancer.bridge` with the manifest stored under `%LOCALAPPDATA%\JiraEnhancer\NativeMessagingHost`                                |
+
+> **Re-runs are safe.** Run the script again any time you rebuild the bridge, change allowed domains, or change your extension ID.
 
 ### 5. Load the Chrome extension
 
@@ -190,13 +221,13 @@ The script auto-detects Linux vs macOS and copies the manifest to the correct Ch
 
 ### Commands
 
-| Command | Description |
-|---|---|
-| `pnpm build` | Build all packages (respects Turborepo dependency order) |
-| `pnpm test` | Run all unit tests (Vitest) |
-| `pnpm lint` | ESLint across all packages |
-| `pnpm format` | Prettier write |
-| `pnpm format:check` | Prettier check (used in CI) |
+| Command             | Description                                              |
+| ------------------- | -------------------------------------------------------- |
+| `pnpm build`        | Build all packages (respects Turborepo dependency order) |
+| `pnpm test`         | Run unit tests with coverage enforcement (Vitest)        |
+| `pnpm lint`         | ESLint across all packages                               |
+| `pnpm format`       | Prettier write                                           |
+| `pnpm format:check` | Prettier check (used in CI)                              |
 
 ### Watch mode (extension)
 
@@ -215,13 +246,13 @@ pnpm --filter @jira-enhancer/shared build
 
 ### Unit tests
 
-76 tests across 8 test files. Run with:
+Unit tests run with V8 coverage enabled and enforce at least 90% line, branch, function, and statement coverage for the covered unit-test targets. Run with:
 
 ```bash
 pnpm test
 ```
 
-Coverage report is written to `packages/*/coverage/`.
+Coverage reports are written to `packages/*/coverage/`.
 
 ### E2E tests (Playwright)
 
@@ -301,17 +332,13 @@ Maximum message size: **1 MB**.
 
 ### OpenCode (default)
 
-The bridge spawns `opencode acp --cwd <projectPath>` and writes a JSON prompt to stdin:
+The bridge spawns `opencode acp --cwd <projectPath>` and communicates over ACP JSON-RPC via stdio. The bridge initializes ACP, creates a session, optionally sets OpenCode session config options for selected `provider/model` and `mode=plan`, then sends the structured Jira enhancement prompt with `session/prompt`.
 
-```json
-{ "type": "prompt", "content": "Refine this Jira ticket description using context from the codebase:\n\n..." }
-```
-
-OpenCode then explores the codebase with its built-in tools (`grep`, `glob`, `read`) and returns the refined Markdown on stdout.
+OpenCode reports progress through `session/update`; the bridge accumulates assistant message chunks and parses the final structured JSON response.
 
 ### Pi CLI
 
-The bridge spawns `pi --mode rpc --cwd <projectPath>` and pipes the Markdown description to stdin. Pi's RPC mode supports "steering" — queuing follow-up refinement messages while the agent is still running.
+The bridge spawns Pi in RPC mode with the child process working directory set to the selected project path, then sends the structured Jira enhancement prompt. When selected, provider/model values are passed as `--provider` and `--model` flags.
 
 ---
 
@@ -331,15 +358,15 @@ Supported ADF node types: `doc`, `paragraph`, `text` (with marks: bold, italic, 
 
 ## Error Reference
 
-| Code | Cause |
-|---|---|
-| `INVALID_MESSAGE` | Malformed JSON or unknown message type |
-| `PROJECT_NOT_FOUND` | Issue key prefix not present in `config.json` mappings |
-| `LLM_TIMEOUT` | LLM process exceeded configured timeout |
-| `LLM_PROCESS_ERROR` | LLM CLI exited with non-zero code |
-| `CONFIG_ERROR` | `config.json` missing, unreadable, or invalid |
-| `ADF_TRANSFORM_ERROR` | ADF parsing or serialisation failed |
-| `UNKNOWN` | Unexpected / uncaught exception |
+| Code                  | Cause                                                  |
+| --------------------- | ------------------------------------------------------ |
+| `INVALID_MESSAGE`     | Malformed JSON or unknown message type                 |
+| `PROJECT_NOT_FOUND`   | Issue key prefix not present in `config.json` mappings |
+| `LLM_TIMEOUT`         | LLM process exceeded configured timeout                |
+| `LLM_PROCESS_ERROR`   | LLM CLI exited with non-zero code                      |
+| `CONFIG_ERROR`        | `config.json` missing, unreadable, or invalid          |
+| `ADF_TRANSFORM_ERROR` | ADF parsing or serialisation failed                    |
+| `UNKNOWN`             | Unexpected / uncaught exception                        |
 
 ---
 

@@ -111,7 +111,7 @@ function renderInlineChildren(node: AdfNode): string {
 
 function applyMarks(
   text: string,
-  marks?: Array<{ type: string; attrs?: Record<string, unknown> }>
+  marks?: Array<{ type: string; attrs?: Record<string, unknown> }>,
 ): string {
   if (!marks || marks.length === 0) return text;
 

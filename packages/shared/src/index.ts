@@ -4,3 +4,6 @@ export * from './config-types.js';
 export * from './errors.js';
 export * from './adf-to-markdown.js';
 export * from './markdown-to-adf.js';
+export * from './markdown-to-jira-markup.js';
+export * from './jira-markup-to-markdown.js';
+export * from './enhancement-prompt.js';
