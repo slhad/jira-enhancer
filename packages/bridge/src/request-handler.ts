@@ -18,7 +18,7 @@ import {
 } from '@jira-enhancer/shared';
 import type { ConfigManager } from './config-manager.js';
 import type { ProcessManager } from './process-manager.js';
-import { getPreviewDebugLogPath } from './debug-logger.js';
+import { debugLog, getPreviewDebugLogPath } from './debug-logger.js';
 import { createAdapter } from './llm/index.js';
 
 export class RequestHandler {
@@ -117,6 +117,12 @@ export class RequestHandler {
   private async handleListModels(msg: ListModelsRequest): Promise<ExtensionMessage> {
     const { timeout } = this.configManager.getConfig();
     const listTimeout = Math.min(timeout, 30_000);
+    debugLog('list models request', {
+      id: msg.id,
+      app: msg.app,
+      timeout: listTimeout,
+      envOverrideKeys: Object.keys(msg.env ?? {}).sort(),
+    });
 
     if (msg.app === 'opencode') {
       const result = await this.processManager.spawnWithTimeout(
@@ -126,12 +132,20 @@ export class RequestHandler {
         listTimeout,
         msg.env,
       );
+      const models = this.parseSlashSeparatedModels(result.stdout);
+      debugLog('list models response', {
+        id: msg.id,
+        app: msg.app,
+        modelCount: models.length,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      });
 
       return {
         type: MessageType.LIST_MODELS_RESPONSE,
         id: msg.id,
         app: msg.app,
-        models: this.parseSlashSeparatedModels(result.stdout),
+        models,
       };
     }
 
@@ -143,12 +157,20 @@ export class RequestHandler {
         listTimeout,
         msg.env,
       );
+      const models = this.parsePiModels(result.stdout);
+      debugLog('list models response', {
+        id: msg.id,
+        app: msg.app,
+        modelCount: models.length,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      });
 
       return {
         type: MessageType.LIST_MODELS_RESPONSE,
         id: msg.id,
         app: msg.app,
-        models: this.parsePiModels(result.stdout),
+        models,
       };
     }
 

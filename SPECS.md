@@ -275,6 +275,7 @@ The popup requests models through native messaging.
   ```
   It parses provider/model/context/max-out/thinking/images columns.
 - Model listing receives the selected harness environment overrides, so providers such as Bedrock can appear when `AWS_PROFILE`/`AWS_REGION` are required.
+- On Windows, the bridge must resolve npm-installed harness command shims such as `opencode.cmd` and `pi.cmd` so Chrome native-host launches can list models and run harnesses even when the executable is a command shim.
 - Duplicate provider/model pairs are removed.
 - Provider dropdown is populated from available providers.
 - Model dropdown is filtered by selected provider and deduplicated.
@@ -375,6 +376,7 @@ The bridge speaks Chrome Native Messaging over stdin/stdout:
 - UTF-8 JSON payload
 - stdout is reserved exclusively for framed protocol messages
 - logging must go to stderr
+- opt-in debug logging is controlled by `JIRA_ENHANCER_DEBUG_LOG` / `JIRA_ENHANCER_LOG_FILE` for bridge/harness diagnostics and `JIRA_ENHANCER_PREVIEW_DEBUG_LOG` / `JIRA_ENHANCER_PREVIEW_LOG_FILE` for preview/debug snapshots
 
 ### 9.2 Config loading
 

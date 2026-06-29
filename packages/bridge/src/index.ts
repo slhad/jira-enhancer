@@ -6,6 +6,7 @@ import { ConfigManager } from './config-manager.js';
 import { ProcessManager } from './process-manager.js';
 import { NativeMessagingProtocol } from './message-protocol.js';
 import { RequestHandler } from './request-handler.js';
+import { debugLog } from './debug-logger.js';
 
 const log = (...args: unknown[]): void => {
   process.stderr.write(`[jira-enhancer-bridge] ${args.join(' ')}\n`);
@@ -52,7 +53,15 @@ async function main(): Promise<void> {
   for (;;) {
     try {
       const msg = await protocol.readMessage();
-      const response = await handler.handleMessage(msg, (event) => protocol.sendMessage(event));
+      debugLog('native message received', { type: msg.type, id: 'id' in msg ? msg.id : undefined });
+      const response = await handler.handleMessage(msg, (event) => {
+        debugLog('native streaming message sent', { type: event.type, id: 'id' in event ? event.id : undefined });
+        protocol.sendMessage(event);
+      });
+      debugLog('native response sent', {
+        type: response.type,
+        id: 'id' in response ? response.id : undefined,
+      });
       protocol.sendMessage(response);
     } catch (err) {
       // Stream closed or read error — exit cleanly

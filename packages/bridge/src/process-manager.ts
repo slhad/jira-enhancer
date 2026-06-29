@@ -1,5 +1,8 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { BridgeError, ErrorCode } from '@jira-enhancer/shared';
+import { debugLog } from './debug-logger.js';
 
 export interface SpawnResult {
   stdout: string;
@@ -24,6 +27,41 @@ export interface SpawnStreamHandlers {
 const DEFAULT_TIMEOUT_MS = 120_000;
 const SIGKILL_DELAY_MS = 5_000;
 
+/* c8 ignore start -- Windows command shim resolution is verified with an installed native-host smoke test. */
+function resolveCommand(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): { command: string; args: string[]; shell: boolean } {
+  if (process.platform !== 'win32' || path.extname(command)) return { command, args, shell: false };
+
+  const pathValue = env.PATH ?? env.Path ?? '';
+  for (const directory of pathValue.split(path.delimiter)) {
+    if (command === 'opencode') {
+      const opencodeExe = path.join(directory, 'node_modules', 'opencode-ai', 'bin', 'opencode.exe');
+      if (fs.existsSync(opencodeExe)) return { command: opencodeExe, args, shell: false };
+    }
+
+    if (command === 'pi') {
+      const piCli = path.join(
+        directory,
+        'node_modules',
+        '@earendil-works',
+        'pi-coding-agent',
+        'dist',
+        'cli.js',
+      );
+      if (fs.existsSync(piCli)) return { command: process.execPath, args: [piCli, ...args], shell: false };
+    }
+
+    const commandShim = path.join(directory, `${command}.cmd`);
+    if (fs.existsSync(commandShim)) return { command: commandShim, args, shell: true };
+  }
+
+  return { command, args, shell: false };
+}
+/* c8 ignore stop */
+
 export class ProcessManager {
   private activeProcesses = new Map<number, ChildProcess>();
 
@@ -35,11 +73,26 @@ export class ProcessManager {
     cwd?: string,
     streamHandlers?: SpawnStreamHandlers,
   ): { child: ChildProcess; promise: Promise<SpawnResult> } {
-    const child = spawn(command, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: env ? { ...process.env, ...env } : process.env,
-      ...(cwd ? { cwd } : {}),
+    const mergedEnv = env ? { ...process.env, ...env } : process.env;
+    const resolved = resolveCommand(command, args, mergedEnv);
+    debugLog('spawn process', {
+      command,
+      resolvedCommand: resolved.command,
+      args: resolved.args,
+      cwd,
+      inputBytes: input === undefined ? 0 : Buffer.byteLength(input),
+      envOverrideKeys: Object.keys(env ?? {}).sort(),
+      path: mergedEnv.PATH ?? mergedEnv.Path,
     });
+
+    const spawnOptions: SpawnOptions = {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: mergedEnv,
+      ...(resolved.shell ? { shell: true } : {}),
+      ...(cwd ? { cwd } : {}),
+    };
+
+    const child = spawn(resolved.command, resolved.args, spawnOptions);
 
     if (child.pid !== undefined) {
       this.activeProcesses.set(child.pid, child);

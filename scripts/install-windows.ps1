@@ -187,8 +187,10 @@ New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $wrapperPath = Join-Path $installDir 'jira-enhancer-bridge.cmd'
 $manifestPath = Join-Path $installDir 'com.jira_enhancer.bridge.json'
 
+$npmGlobal = Join-Path $env:APPDATA 'npm'
 $wrapper = @"
 @echo off
+set "PATH=$npmGlobal;%PATH%"
 "$($nodeCommand.Source)" "$bridgeDist"
 "@
 [System.IO.File]::WriteAllText($wrapperPath, $wrapper, [System.Text.Encoding]::ASCII)
