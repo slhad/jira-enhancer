@@ -8,31 +8,46 @@ This README is the project overview and setup/development guide. For the full pr
 
 ## How It Works
 
-```
-  Jira (browser)
-       │  clicks "✨ Enhance"
-       ▼
-  Chrome Extension
-  ├── content script  — detects issue key from URL, injects button
-  ├── service worker  — routes messages to native host
-  └── popup (React)   — diff view, editor, mode/provider selector
-       │  chrome.runtime.connectNative
-       ▼
-  Native Messaging Bridge  (Node.js / this repo)
-  ├── reads ADF description from Jira REST API
-  ├── converts ADF → Markdown
-  ├── spawns LLM CLI (OpenCode ACP or Pi RPC)
-  │       └── CLI explores codebase with grep/glob/read tools
-  ├── receives refined Markdown
-  ├── converts Markdown → ADF
-  └── returns result to extension
-       │
-       ▼
-  Extension renders side-by-side diff.
-  User edits and accepts → Jira description updated.
+The extension reads Jira issue context in the browser, sends structured requests through the native messaging bridge, and runs the selected harness (OpenCode ACP or Pi RPC) against the configured local project path. The bridge communicates with Chrome over **stdin/stdout** using the [Chrome Native Messaging protocol](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging): every JSON message is prefixed with a 4-byte little-endian length header.
+
+### Issue enhancement flow
+
+```mermaid
+flowchart TD
+  A[Jira issue page] --> B[Popup: read Jira fields]
+  B --> C[Popup: configure enhancement prompt, harness, model, launch path]
+  C --> D[Open full-page review session]
+  D --> E[Review request: metadata, harness command, prompt]
+  E --> F[Run harness through native bridge]
+  F --> G[Full-page activity log]
+  G --> H[Review enhanced fields / diff]
+  H --> I[Preview in Jira]
+  I --> J[Apply through Jira REST]
+  J --> K[Saved Jira fields]
 ```
 
-The bridge communicates with Chrome over **stdin/stdout** using the [Chrome Native Messaging protocol](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging): every JSON message is prefixed with a 4-byte little-endian length header.
+### Sub-task generation flow
+
+```mermaid
+flowchart TD
+  A[Jira issue page] --> B[Popup: read issue fields and Jira sub-task types]
+  B --> C[Popup: configure sub-task prompt, title-only mode, harness, model, launch path]
+  C --> D[Open full-page generation session]
+  D --> E[Run harness through native bridge]
+  E --> F[Full-page activity log]
+  F --> G[Review generated sub-task definitions]
+  G --> H{Title-only mode?}
+  H -- Yes --> I[Review title, Jira type/category, keep toggle, rationale]
+  H -- No --> J[Review title, Jira type/category, keep toggle, rationale, description, acceptance criteria]
+  I --> K[Preview kept sub-tasks on Jira page]
+  J --> K
+  K --> L[Create kept sub-tasks one-by-one through Jira REST]
+  I --> L
+  J --> L
+  I --> M[Save kept sub-tasks to local history]
+  J --> M
+  M --> N[Focus source Jira tab and close full-page session]
+```
 
 ---
 
@@ -193,7 +208,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -ExtensionId <YOUR_EXTENSION_ID>
 ```
 
-By default the scripts use `https://*.atlassian.net/*` and `https://*.jira.com/*`. Add private/local Jira domains only when prompted; they stay in your gitignored `.env` and must not be committed.
+By default the scripts use `https://*.atlassian.net/*` and `https://*.jira.com/*`. Add private/local Jira domains only when prompted; they stay in your gitignored `.env` and must not be committed. You can also set `VITE_ACCEPTANCE_CRITERIA_IGNORE_PATTERN` in `.env` to a case-insensitive regex for placeholder Acceptance Criteria text that should be treated as empty, for example `THIS IS A TEST|PLEASE DO NOT USE YET`. Set `VITE_IGNORED_MODEL_PROVIDERS` to a comma-separated list such as `openai,google` to hide those provider IDs from provider/model dropdowns.
 
 The scripts:
 
@@ -201,11 +216,11 @@ The scripts:
 - Write the native host manifest for the current user
 - On Windows, create a small `.cmd` wrapper under `%LOCALAPPDATA%\JiraEnhancer\NativeMessagingHost` and register it under `HKCU`
 
-| Platform | Manifest directory / registry                                                                                                                                                                      |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux    | `~/.config/google-chrome/NativeMessagingHosts/`                                                                                                                                                    |
-| macOS    | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`                                                                                                                                |
-| Windows  | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.jira_enhancer.bridge` with the manifest stored under `%LOCALAPPDATA%\JiraEnhancer\NativeMessagingHost`                                |
+| Platform | Manifest directory / registry                                                                                                                                |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Linux    | `~/.config/google-chrome/NativeMessagingHosts/`                                                                                                              |
+| macOS    | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`                                                                                          |
+| Windows  | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.jira_enhancer.bridge` with the manifest stored under `%LOCALAPPDATA%\JiraEnhancer\NativeMessagingHost` |
 
 > **Re-runs are safe.** Run the script again any time you rebuild the bridge, change allowed domains, or change your extension ID.
 
@@ -300,11 +315,14 @@ E2E tests load the extension as an unpacked extension into a real Chromium insta
 # Build the extension first
 pnpm --filter @jira-enhancer/extension build
 
-# Run Playwright tests
-npx playwright test
+# Run Playwright tests in a virtual display (default; no visible browser window)
+pnpm test:e2e
+
+# Backup/debug command: run with a visible browser window
+pnpm test:e2e:headed
 ```
 
-Tests live in `packages/extension/__tests__/e2e/`.
+The E2E spec currently launches Chromium in headed extension mode, so `pnpm test:e2e` wraps it with `xvfb-run` on Linux to keep it off your screen. Tests live in `packages/extension/__tests__/e2e/`.
 
 ---
 

@@ -166,7 +166,9 @@ chrome.runtime.onMessage.addListener(
       message.type === MessageType.SAVE_IMAGES_REQUEST ||
       message.type === MessageType.DEBUG_LOG_REQUEST
     ) {
-      if (sender.tab?.id !== undefined) {
+      if (message.type === MessageType.LIST_MODELS_REQUEST) {
+        pendingRequests.set(message.id, { kind: 'runtime', sendResponse });
+      } else if (sender.tab?.id !== undefined) {
         pendingRequests.set(message.id, { kind: 'tab', tabId: sender.tab.id });
       } else if (
         message.type === MessageType.ENHANCE_REQUEST ||

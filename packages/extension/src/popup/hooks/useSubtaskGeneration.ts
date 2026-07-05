@@ -40,6 +40,8 @@ interface UseSubtaskGenerationReturn {
     sessionRef?: HarnessSessionRef,
     reuseSession?: boolean,
     titleOnly?: boolean,
+    availableSubtaskCategories?: string[],
+    titleMaxLength?: number,
   ) => void;
   loadCompletedResult: (result: SubtaskGenerationResult, sessionRef?: HarnessSessionRef) => void;
   status: SubtaskGenerationStatus;
@@ -120,6 +122,8 @@ export function useSubtaskGeneration(): UseSubtaskGenerationReturn {
       reusableSessionRef?: HarnessSessionRef,
       reuseSession?: boolean,
       titleOnly?: boolean,
+      availableSubtaskCategories?: string[],
+      titleMaxLength?: number,
     ) => {
       const id = crypto.randomUUID();
       currentRequestId.current = id;
@@ -149,6 +153,10 @@ export function useSubtaskGeneration(): UseSubtaskGenerationReturn {
           ? { reuseSession: true, sessionRef: reusableSessionRef }
           : {}),
         ...(titleOnly ? { titleOnly: true } : {}),
+        ...(availableSubtaskCategories && availableSubtaskCategories.length > 0
+          ? { availableSubtaskCategories }
+          : {}),
+        ...(titleMaxLength && titleMaxLength > 0 ? { subtaskTitleMaxLength: titleMaxLength } : {}),
       };
       sendMessage(request);
     },

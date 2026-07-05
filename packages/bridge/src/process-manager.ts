@@ -38,7 +38,13 @@ function resolveCommand(
   const pathValue = env.PATH ?? env.Path ?? '';
   for (const directory of pathValue.split(path.delimiter)) {
     if (command === 'opencode') {
-      const opencodeExe = path.join(directory, 'node_modules', 'opencode-ai', 'bin', 'opencode.exe');
+      const opencodeExe = path.join(
+        directory,
+        'node_modules',
+        'opencode-ai',
+        'bin',
+        'opencode.exe',
+      );
       if (fs.existsSync(opencodeExe)) return { command: opencodeExe, args, shell: false };
     }
 
@@ -51,7 +57,8 @@ function resolveCommand(
         'dist',
         'cli.js',
       );
-      if (fs.existsSync(piCli)) return { command: process.execPath, args: [piCli, ...args], shell: false };
+      if (fs.existsSync(piCli))
+        return { command: process.execPath, args: [piCli, ...args], shell: false };
     }
 
     const commandShim = path.join(directory, `${command}.cmd`);

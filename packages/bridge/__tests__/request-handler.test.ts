@@ -64,16 +64,16 @@ describe('RequestHandler', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env.JIRA_ENHANCER_PREVIEW_DEBUG_LOG;
-    delete process.env.JIRA_ENHANCER_PREVIEW_LOG_FILE;
+    process.env.JIRA_ENHANCER_PREVIEW_DEBUG_LOG = '0';
+    process.env.JIRA_ENHANCER_PREVIEW_LOG_FILE = '';
     configManager = makeConfigManager();
     processManager = makeProcessManager();
     handler = new RequestHandler(configManager, processManager);
   });
 
   afterEach(() => {
-    delete process.env.JIRA_ENHANCER_PREVIEW_DEBUG_LOG;
-    delete process.env.JIRA_ENHANCER_PREVIEW_LOG_FILE;
+    process.env.JIRA_ENHANCER_PREVIEW_DEBUG_LOG = '0';
+    process.env.JIRA_ENHANCER_PREVIEW_LOG_FILE = '';
   });
 
   it('should return EnhanceResponse for valid ENHANCE_REQUEST', async () => {

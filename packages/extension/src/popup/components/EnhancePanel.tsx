@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { MessageType } from '@jira-enhancer/shared';
+import { filterIgnoredModelProviders } from '../model-filter';
 import type {
   EnhanceMode,
   HarnessSafetyMode,
@@ -159,7 +160,7 @@ export function EnhancePanel({ issueKey, components, onEnhance, isProcessing }: 
         setModelsLoading(false);
         if (chrome.runtime.lastError || !response) return;
         if (response.type === MessageType.LIST_MODELS_RESPONSE && response.id === id) {
-          setModels(response.models);
+          setModels(filterIgnoredModelProviders(response.models));
         }
       },
     );

@@ -4,6 +4,8 @@ import {
   buildDescriptionWithIssueFields,
   findFieldByName,
   parseJiraChangelogEntries,
+  parseRejectedJiraFieldIds,
+  shouldIgnoreAcceptanceCriteria,
   stringifyJiraFieldValue,
 } from '../src/popup/popup.js';
 
@@ -26,6 +28,18 @@ describe('popup Jira custom fields', () => {
     expect(findFieldByName(data, new Set(['acceptance criteria']))).toBe(
       'A hotfix can be triggered\nUnit tests cover the flow',
     );
+  });
+
+  it('detects configured placeholder acceptance criteria text', () => {
+    expect(
+      shouldIgnoreAcceptanceCriteria(
+        'THIS IS A TEST - PLEASE DO NOT USE YET',
+        'THIS IS A TEST|PLEASE DO NOT USE YET',
+      ),
+    ).toBe(true);
+    expect(
+      shouldIgnoreAcceptanceCriteria('Given the user submits the form', 'THIS IS A TEST'),
+    ).toBe(false);
   });
 
   it('converts ADF custom-field content to markdown', () => {
@@ -111,6 +125,21 @@ describe('popup Jira custom fields', () => {
     );
 
     expect(entries).toEqual([]);
+  });
+
+  it('extracts Jira fields rejected because they are not editable on the screen', () => {
+    expect(
+      parseRejectedJiraFieldIds(
+        JSON.stringify({
+          errorMessages: [],
+          errors: {
+            customfield_21852:
+              "Field 'customfield_21852' cannot be set. It is not on the appropriate screen, or unknown.",
+            customfield_12001: 'Some other validation error',
+          },
+        }),
+      ),
+    ).toEqual(['customfield_21852']);
   });
 
   it('appends story points and acceptance criteria to the LLM input description', () => {

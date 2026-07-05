@@ -55,7 +55,10 @@ async function main(): Promise<void> {
       const msg = await protocol.readMessage();
       debugLog('native message received', { type: msg.type, id: 'id' in msg ? msg.id : undefined });
       const response = await handler.handleMessage(msg, (event) => {
-        debugLog('native streaming message sent', { type: event.type, id: 'id' in event ? event.id : undefined });
+        debugLog('native streaming message sent', {
+          type: event.type,
+          id: 'id' in event ? event.id : undefined,
+        });
         protocol.sendMessage(event);
       });
       debugLog('native response sent', {

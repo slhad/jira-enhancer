@@ -4,6 +4,8 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
+    "test:e2e": "pnpm build && xvfb-run -a playwright test",
+    "test:e2e:headed": "pnpm build && playwright test --headed",
     "lint": "turbo run lint",
     "format": "prettier --write .",
     "format:check": "turbo run format:check"

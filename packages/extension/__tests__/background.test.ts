@@ -372,6 +372,24 @@ describe('background service worker', () => {
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(status);
   });
 
+  it('responds to list model requests from extension tabs through the runtime callback', async () => {
+    await import('../src/background/background.js');
+
+    const message = { type: MessageType.LIST_MODELS_REQUEST, id: 'full-page-models', app: 'pi' };
+    const response = {
+      type: MessageType.LIST_MODELS_RESPONSE,
+      id: 'full-page-models',
+      app: 'pi',
+      models: [{ provider: 'openai', model: 'gpt-4.1' }],
+    };
+    const sendResponse = vi.fn();
+    runtimeOnMessage.fire(message, { tab: { id: 42 } as chrome.tabs.Tab }, sendResponse);
+    portOnMessage.fire(response);
+
+    expect(sendResponse).toHaveBeenCalledWith(response);
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(42, response);
+  });
+
   it('responds to runtime list, save image, and debug requests directly', async () => {
     await import('../src/background/background.js');
     for (const [message, response] of [

@@ -80,6 +80,18 @@ export class PiAdapter {
     let lastTextBlock = '';
     let detectedUserActionError = '';
 
+    const captureFinalOutput = (text: string): boolean => {
+      const candidate = stripPromptEcho(stripMarkdownFences(text));
+      if (!looksLikeFinalJson(candidate)) return false;
+      finalMarkdown = candidate;
+      onEvent?.({
+        app: 'pi',
+        kind: 'final',
+        text: 'Pi produced structured enhancement output.',
+      });
+      return true;
+    };
+
     const handleJsonLine = (line: string): boolean => {
       if (!line.trim()) return false;
       let event: unknown;
@@ -118,7 +130,7 @@ export class PiAdapter {
         onEvent?.({
           app: 'pi',
           kind: 'tool_call',
-          text: `Using read-only tool: ${String(record.toolName ?? 'tool')}`,
+          text: formatToolExecutionStart(record),
         });
         return false;
       }
@@ -126,7 +138,7 @@ export class PiAdapter {
         onEvent?.({
           app: 'pi',
           kind: 'tool_result',
-          text: `${String(record.toolName ?? 'tool')} completed${record.isError ? ' with an error' : ''}.`,
+          text: formatToolExecutionEnd(record),
         });
         return false;
       }
@@ -159,13 +171,18 @@ export class PiAdapter {
         }
         if (delta.type === 'text_end' && typeof delta.content === 'string') {
           lastTextBlock = delta.content;
+          if (captureFinalOutput(lastTextBlock)) return true;
         }
+        if (delta.type === 'done' && captureFinalOutput(lastTextBlock)) return true;
         return false;
       }
       if (record.type === 'message_end') {
         if (isAssistantMessage(record.message)) {
           const text = extractText(record.message);
-          if (text) lastTextBlock = text;
+          if (text) {
+            lastTextBlock = text;
+            if (captureFinalOutput(lastTextBlock)) return true;
+          }
         }
         return false;
       }
@@ -253,6 +270,61 @@ export class PiAdapter {
       );
     }
     return finalOutput;
+  }
+}
+
+function looksLikeFinalJson(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return Boolean(
+      parsed &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      ('description' in parsed || 'subtasks' in parsed),
+    );
+  } catch {
+    return false;
+  }
+}
+
+function formatToolExecutionStart(record: Record<string, unknown>): string {
+  const toolName = String(record.toolName ?? 'tool');
+  const details = extractToolDetails(record);
+  return `Using read-only tool: ${toolName}${details ? `\n${details}` : ''}`;
+}
+
+function formatToolExecutionEnd(record: Record<string, unknown>): string {
+  const toolName = String(record.toolName ?? 'tool');
+  const details = extractToolResultDetails(record);
+  return `${toolName} completed${record.isError ? ' with an error' : ''}.${details ? `\n${details}` : ''}`;
+}
+
+function extractToolDetails(record: Record<string, unknown>): string {
+  for (const key of ['args', 'arguments', 'input', 'params', 'parameters']) {
+    const value = record[key];
+    if (value === undefined) continue;
+    return formatUnknownValue(value);
+  }
+  return '';
+}
+
+function extractToolResultDetails(record: Record<string, unknown>): string {
+  for (const key of ['result', 'output', 'stdout', 'stderr', 'error']) {
+    const value = record[key];
+    if (value === undefined) continue;
+    const formatted = formatUnknownValue(value);
+    if (formatted) return formatted.slice(0, 1200);
+  }
+  return '';
+}
+
+function formatUnknownValue(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (value === null || value === undefined) return '';
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
   }
 }
 

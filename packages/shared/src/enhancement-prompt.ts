@@ -63,7 +63,14 @@ export function buildSubtaskGenerationPrompt(
   customPrompt?: string,
   selection?: Pick<
     LlmSelection,
-    'modelProvider' | 'model' | 'safetyMode' | 'reuseSession' | 'sessionRef' | 'subtaskTitleOnly'
+    | 'modelProvider'
+    | 'model'
+    | 'safetyMode'
+    | 'reuseSession'
+    | 'sessionRef'
+    | 'subtaskTitleOnly'
+    | 'availableSubtaskCategories'
+    | 'subtaskTitleMaxLength'
   >,
 ): string {
   const inputPayload = JSON.stringify(
@@ -83,14 +90,18 @@ Rules:
 - You may inspect available project or Jira/Confluence context, but only for reading.
 - Do not modify files, run write operations, update Jira/Confluence, create comments, transition issues, or create Jira issues.
 - Propose a practical default set of sub-tasks and implementation-specific sub-tasks inferred from the issue.
-- Include these default categories when applicable: Pull Request, Copilot Quality, QA Tests, Dev Tests, Unit Tests if needed, Documentation if needed, Release Procedure if needed.
+- Use only the available Jira sub-task categories/types listed below for the category field when the list is provided.
+- If no Jira category/type list is provided, include these default categories when applicable: Pull Request, Copilot Quality, QA Tests, Dev Tests, Unit Tests if needed, Documentation if needed, Release Procedure if needed.
 - Add one implementation sub-task for each important point or step needed to complete the Jira issue.
-- Keep titles concise and actionable. Descriptions must be developer-ready Markdown unless title-only mode is enabled.
+- Keep titles concise and actionable. Every title must be ${selection?.subtaskTitleMaxLength ?? 80} characters or fewer. Descriptions must be developer-ready Markdown unless title-only mode is enabled.
 - Mark optional/conditional work with required=false and explain the rationale.
 - Return ONLY valid JSON. Do not wrap it in Markdown fences. Do not include prose outside JSON.
 
 Input JSON:
 ${inputPayload}
+
+Available Jira sub-task categories/types:
+${selection?.availableSubtaskCategories?.length ? selection.availableSubtaskCategories.map((category) => `- ${category}`).join('\n') : '- Not available; use sensible default categories.'}
 
 Output JSON schema:
 ${JSON.stringify(
@@ -98,12 +109,13 @@ ${JSON.stringify(
     subtasks: [
       {
         id: 'stable short slug string',
-        title: 'concise sub-task summary',
+        title: `concise sub-task summary, max ${selection?.subtaskTitleMaxLength ?? 80} characters`,
         description: selection?.subtaskTitleOnly
           ? 'empty string; title-only mode is enabled'
           : 'developer-ready Markdown description',
-        category:
-          'implementation | pullRequest | copilotQuality | qaTests | devTests | unitTests | documentation | releaseProcedure | other',
+        category: selection?.availableSubtaskCategories?.length
+          ? `one of: ${selection.availableSubtaskCategories.join(' | ')}`
+          : 'implementation | pullRequest | copilotQuality | QA Tests | Dev Tests | Unit Tests | Documentation | Release Procedure | other',
         required: true,
         rationale: 'optional short reason, especially when required=false',
         acceptanceCriteria: ['optional testable criteria strings'],

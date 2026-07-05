@@ -28,6 +28,7 @@ import { EnhancePanel } from './components/EnhancePanel';
 import { SubtaskPanel } from './components/SubtaskPanel';
 import { MarkdownEditor } from './components/MarkdownEditor';
 import { ConverterLab } from './components/ConverterLab';
+import { isIgnoredModelProvider } from './model-filter';
 
 type View =
   | 'enhance'
@@ -54,6 +55,59 @@ interface PendingEnhancement {
   customPrompt?: string;
   env?: Record<string, string>;
   safetyMode?: HarnessSafetyMode;
+}
+
+interface PendingSubtaskGeneration {
+  mode: EnhanceMode;
+  app: LlmApp;
+  modelProvider?: string;
+  model?: string;
+  launchPath?: string;
+  customPrompt?: string;
+  env?: Record<string, string>;
+  safetyMode?: HarnessSafetyMode;
+  sessionRef?: HarnessSessionRef;
+  reuseSession?: boolean;
+  titleOnly?: boolean;
+  availableSubtaskCategories?: string[];
+  titleMaxLength?: number;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function sanitizePendingEnhancement(pending: PendingEnhancement): PendingEnhancement {
+  if (!isIgnoredModelProvider(pending.modelProvider)) return pending;
+  return { ...pending, modelProvider: undefined, model: undefined };
+}
+
+function buildHarnessCommandPreview(pending: PendingEnhancement | null, prompt: string): string {
+  if (!pending) return '';
+
+  const projectPath = pending.launchPath?.trim() || '<configured project path>';
+  const envEntries = Object.entries(pending.env ?? {}).filter(([, value]) => value.trim());
+  const envPrefix = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(' ');
+  const cwdPrefix = `cd ${shellQuote(projectPath)}`;
+
+  if (pending.app === 'pi') {
+    const args = ['pi', '--mode', 'rpc', '--no-session'];
+    if (pending.safetyMode !== 'trust-ai') args.push('--tools', 'read,grep,find,ls');
+    if (pending.modelProvider) args.push('--provider', pending.modelProvider);
+    if (pending.model) args.push('--model', pending.model);
+    const stdinPayload = JSON.stringify({ type: 'prompt', message: prompt });
+    const command = `${envPrefix ? `${envPrefix} ` : ''}${args.map(shellQuote).join(' ')}`;
+    return `${cwdPrefix}\nprintf '%s\\n' ${shellQuote(stdinPayload)} | ${command}`;
+  }
+
+  const command = `${envPrefix ? `${envPrefix} ` : ''}opencode acp --cwd ${shellQuote(projectPath)}`;
+  const modelConfig =
+    pending.modelProvider && pending.model
+      ? `\n# ACP config: session/set_config_option model=${pending.modelProvider}/${pending.model}`
+      : '';
+  const modeConfig =
+    pending.safetyMode !== 'trust-ai' ? '\n# ACP config: session/set_config_option mode=plan' : '';
+  return `${cwdPrefix}\n${command}\n# ACP stdin: initialize, session/new, then session/prompt with the prompt shown below.${modelConfig}${modeConfig}`;
 }
 
 interface ProcessingRow {
@@ -142,7 +196,9 @@ interface FullPageSession {
   issueType: string | null;
   fieldIds?: JiraFieldIds;
   images: ImageAttachment[];
-  pendingEnhancement: PendingEnhancement;
+  pendingEnhancement?: PendingEnhancement;
+  pendingSubtaskGeneration?: PendingSubtaskGeneration;
+  initialView?: View;
 }
 
 const JIRA_ISSUE_PATTERN = /\/browse\/([A-Z][A-Z0-9_]+-\d+)/;
@@ -159,6 +215,10 @@ function fieldsToJiraMarkup(fields: JiraEnhancementFields): JiraEnhancementField
 
 function appendReadableDelta(current: string, delta: string): string {
   return `${current}${delta}`;
+}
+
+function interpretEscapedNewlines(text: string): string {
+  return text.replace(/\\r\\n|\\n|\\r/g, '\n');
 }
 
 function getProcessingRows(events: HarnessEvent[]): ProcessingRow[] {
@@ -181,7 +241,7 @@ function getProcessingRows(events: HarnessEvent[]): ProcessingRow[] {
           : event.kind === 'final'
             ? 'final'
             : 'assistant';
-    const text = event.text.replace(/^Thinking:\s*/, '');
+    const text = interpretEscapedNewlines(event.text.replace(/^Thinking:\s*/, ''));
     const previous = rows.at(-1);
     if (previous && (label === 'thinking' || label === 'assistant') && previous.label === label) {
       previous.text = appendReadableDelta(previous.text, text);
@@ -234,6 +294,12 @@ function loadResultHistory(issueKey: string): StoredEnhancementResult[] {
   }
 }
 
+function removeResultFromHistory(issueKey: string, resultId: string): StoredEnhancementResult[] {
+  const next = loadResultHistory(issueKey).filter((item) => item.id !== resultId);
+  localStorage.setItem(historyStorageKey(issueKey), JSON.stringify(next));
+  return next;
+}
+
 function saveSubtaskGenerationToHistory(
   result: StoredSubtaskGeneration,
 ): StoredSubtaskGeneration[] {
@@ -251,6 +317,15 @@ function loadSubtaskHistory(issueKey: string): StoredSubtaskGeneration[] {
   } catch {
     return [];
   }
+}
+
+function removeSubtaskGenerationFromHistory(
+  issueKey: string,
+  generationId: string,
+): StoredSubtaskGeneration[] {
+  const next = loadSubtaskHistory(issueKey).filter((item) => item.id !== generationId);
+  localStorage.setItem(subtaskHistoryStorageKey(issueKey), JSON.stringify(next));
+  return next;
 }
 
 function saveResultToHistory(result: StoredEnhancementResult): StoredEnhancementResult[] {
@@ -291,6 +366,13 @@ interface PageDescriptionResult {
   acceptanceCriteria?: string | null;
 }
 
+interface JiraCreateMetaResponse {
+  projects?: Array<{
+    issuetypes?: Array<{ name?: string; subtask?: boolean; hierarchyLevel?: number }>;
+  }>;
+  values?: Array<{ name?: string; subtask?: boolean; hierarchyLevel?: number }>;
+}
+
 interface JiraIssueDescriptionResponse {
   names?: Record<string, string>;
   fields?: {
@@ -312,6 +394,8 @@ interface JiraIssueData {
 
 const STORY_POINTS_FIELD_NAMES = new Set(['story points', 'story point estimate']);
 const ACCEPTANCE_CRITERIA_FIELD_NAMES = new Set(['acceptance criteria']);
+const ACCEPTANCE_CRITERIA_IGNORE_PATTERN = import.meta.env
+  .VITE_ACCEPTANCE_CRITERIA_IGNORE_PATTERN as string | undefined;
 
 function normalizeJiraFieldName(name: string): string {
   return name
@@ -329,6 +413,24 @@ function isWantedFieldName(name: string, wantedNames: Set<string>): boolean {
   if (wantedNames === ACCEPTANCE_CRITERIA_FIELD_NAMES)
     return normalized.includes('acceptance criteria');
   return false;
+}
+
+export function shouldIgnoreAcceptanceCriteria(
+  value: string,
+  pattern = ACCEPTANCE_CRITERIA_IGNORE_PATTERN,
+): boolean {
+  const trimmedPattern = pattern?.trim();
+  if (!trimmedPattern) return false;
+  try {
+    return new RegExp(trimmedPattern, 'i').test(value);
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeAcceptanceCriteria(value: string | null): string | null {
+  if (!value) return null;
+  return shouldIgnoreAcceptanceCriteria(value) ? null : value;
 }
 
 export function stringifyJiraFieldValue(value: unknown): string | null {
@@ -487,6 +589,22 @@ export function parseJiraChangelogEntries(
   });
 }
 
+export function parseRejectedJiraFieldIds(responseText: string): string[] {
+  try {
+    const parsed = JSON.parse(responseText) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+    const errors = (parsed as { errors?: unknown }).errors;
+    if (!errors || typeof errors !== 'object' || Array.isArray(errors)) return [];
+    return Object.entries(errors as Record<string, unknown>)
+      .filter(([, message]) =>
+        /cannot be set|not on the appropriate screen|unknown/i.test(String(message)),
+      )
+      .map(([fieldId]) => fieldId);
+  } catch {
+    return [];
+  }
+}
+
 async function fetchJiraChangelogEntries(
   issueKey: string,
   pageUrl: string,
@@ -524,6 +642,48 @@ async function fetchJiraChangelogEntries(
   );
 }
 
+async function fetchAvailableSubtaskCategories(
+  issueKey: string,
+  pageUrl: string,
+): Promise<string[]> {
+  const { origin } = new URL(pageUrl);
+  const projectKey = issueKey.split('-')[0];
+  if (!projectKey) return [];
+  const urls = [
+    `${origin}/rest/api/2/issue/createmeta?projectKeys=${encodeURIComponent(projectKey)}&expand=projects.issuetypes`,
+    `${origin}/rest/api/3/issue/createmeta?projectKeys=${encodeURIComponent(projectKey)}&expand=projects.issuetypes`,
+    `${origin}/rest/api/2/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes`,
+    `${origin}/rest/api/3/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes`,
+  ];
+
+  for (const url of urls) {
+    const response = await fetch(url, { credentials: 'include' }).catch(() => null);
+    if (!response?.ok) continue;
+    const data = (await response.json()) as JiraCreateMetaResponse;
+    const issueTypes = [
+      ...(data.values ?? []),
+      ...(data.projects ?? []).flatMap((project) => project.issuetypes ?? []),
+    ];
+    const names = issueTypes
+      .filter((issueType) => {
+        const normalized = normalizeJiraFieldName(issueType.name ?? '');
+        return (
+          issueType.subtask === true ||
+          issueType.hierarchyLevel === -1 ||
+          normalized === 'sub task' ||
+          normalized === 'subtask' ||
+          normalized.includes('sub task')
+        );
+      })
+      .flatMap((issueType) => issueType.name ?? []);
+    const uniqueNames = Array.from(
+      new Set(names.map((name) => name.trim()).filter(Boolean)),
+    ).sort();
+    if (uniqueNames.length > 0) return uniqueNames;
+  }
+  return [];
+}
+
 async function fetchRawJiraIssueData(issueKey: string, pageUrl: string): Promise<JiraIssueData> {
   const { origin } = new URL(pageUrl);
   const response = await fetch(
@@ -547,7 +707,9 @@ async function fetchRawJiraIssueData(issueKey: string, pageUrl: string): Promise
     components: data.fields?.components?.flatMap((component) => component.name ?? []) ?? [],
     issueType: data.fields?.issuetype?.name ?? null,
     storyPoints: findFieldByName(data, STORY_POINTS_FIELD_NAMES),
-    acceptanceCriteria: findFieldByName(data, ACCEPTANCE_CRITERIA_FIELD_NAMES),
+    acceptanceCriteria: sanitizeAcceptanceCriteria(
+      findFieldByName(data, ACCEPTANCE_CRITERIA_FIELD_NAMES),
+    ),
     fieldIds: {
       storyPoints: findFieldIdByName(data, STORY_POINTS_FIELD_NAMES) ?? undefined,
       acceptanceCriteria: findFieldIdByName(data, ACCEPTANCE_CRITERIA_FIELD_NAMES) ?? undefined,
@@ -562,6 +724,160 @@ function appendPreviewDebugLog(source: string, payload: unknown): void {
     source,
     payload,
   });
+}
+
+function setSubtaskPreviewBannerInPage(parentIssueKey: string, subtasks: GeneratedSubtask[]): void {
+  document.getElementById('jira-enhancer-subtask-preview-banner')?.remove();
+  const banner = document.createElement('div');
+  banner.id = 'jira-enhancer-subtask-preview-banner';
+  banner.setAttribute('role', 'status');
+  Object.assign(banner.style, {
+    position: 'fixed',
+    zIndex: '2147483647',
+    right: '16px',
+    bottom: '16px',
+    maxWidth: '520px',
+    maxHeight: '60vh',
+    overflow: 'auto',
+    padding: '12px',
+    border: '1px solid #0052cc',
+    borderRadius: '8px',
+    background: '#ffffff',
+    boxShadow: '0 8px 24px rgba(9, 30, 66, 0.25)',
+    color: '#172b4d',
+    font: '13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  });
+  const header = document.createElement('div');
+  header.style.display = 'flex';
+  header.style.justifyContent = 'space-between';
+  header.style.gap = '12px';
+  header.style.alignItems = 'center';
+  const title = document.createElement('strong');
+  title.textContent = `Jira Enhancer sub-task preview for ${parentIssueKey}`;
+  const status = document.createElement('div');
+  status.textContent = `${subtasks.length} kept sub-task${subtasks.length === 1 ? '' : 's'} ready to create.`;
+  status.style.marginTop = '6px';
+  status.style.color = '#5e6c84';
+  status.style.fontSize = '12px';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = '×';
+  Object.assign(close.style, {
+    border: 'none',
+    background: 'transparent',
+    color: '#42526e',
+    cursor: 'pointer',
+    fontSize: '18px',
+    lineHeight: '18px',
+  });
+  close.addEventListener('click', () => banner.remove());
+  header.append(title, close);
+  const list = document.createElement('ol');
+  list.style.margin = '10px 0 0 18px';
+  list.style.padding = '0';
+  const listItems: HTMLLIElement[] = [];
+  for (const subtask of subtasks) {
+    const item = document.createElement('li');
+    item.style.marginBottom = '8px';
+    const itemTitle = document.createElement('div');
+    itemTitle.textContent = subtask.title;
+    itemTitle.style.fontWeight = '600';
+    const meta = document.createElement('div');
+    meta.textContent = `Type: ${subtask.category || 'Unassigned'}`;
+    meta.style.color = '#5e6c84';
+    meta.style.fontSize = '12px';
+    item.append(itemTitle, meta);
+    if (subtask.description) {
+      const description = document.createElement('div');
+      description.textContent = subtask.description.slice(0, 180);
+      description.style.marginTop = '3px';
+      item.appendChild(description);
+    }
+    listItems.push(item);
+    list.appendChild(item);
+  }
+  const actions = document.createElement('div');
+  actions.style.display = 'flex';
+  actions.style.justifyContent = 'flex-end';
+  actions.style.gap = '8px';
+  actions.style.marginTop = '10px';
+  const create = document.createElement('button');
+  create.type = 'button';
+  create.textContent = 'Create kept sub-tasks';
+  Object.assign(create.style, {
+    padding: '6px 10px',
+    border: 'none',
+    borderRadius: '3px',
+    background: '#0052cc',
+    color: '#ffffff',
+    cursor: 'pointer',
+    fontWeight: '600',
+  });
+  create.addEventListener('click', async () => {
+    create.setAttribute('disabled', 'true');
+    const { origin, hostname } = window.location;
+    const isCloud = hostname.endsWith('.atlassian.net');
+    const projectKey = parentIssueKey.split('-')[0];
+    const apiVersion = isCloud ? '3' : '2';
+    const createdKeys: string[] = [];
+    const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    const toAdf = (text: string) => ({
+      type: 'doc',
+      version: 1,
+      content: text
+        .split(/\n{2,}/)
+        .filter((paragraph) => paragraph.trim())
+        .map((paragraph) => ({
+          type: 'paragraph',
+          content: [{ type: 'text', text: paragraph.trim() }],
+        })),
+    });
+    for (let index = 0; index < subtasks.length; index += 1) {
+      const subtask = subtasks[index];
+      status.textContent = `Creating ${index + 1}/${subtasks.length}: ${subtask.title}`;
+      const fields: Record<string, unknown> = {
+        project: { key: projectKey },
+        parent: { key: parentIssueKey },
+        summary: subtask.title,
+        issuetype: { name: subtask.category },
+      };
+      if (subtask.description.trim())
+        fields.description = isCloud ? toAdf(subtask.description) : subtask.description;
+      const response = await fetch(`${origin}/rest/api/${apiVersion}/issue`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ fields }),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        status.textContent = `Creation failed (${response.status}) for ${subtask.title}. ${text.slice(0, 180)}`;
+        create.removeAttribute('disabled');
+        return;
+      }
+      const created = (await response.json().catch(() => ({}))) as { key?: string };
+      if (created.key) createdKeys.push(created.key);
+      const createdItem = listItems[index];
+      if (createdItem) {
+        createdItem.style.transition = 'opacity 160ms ease, transform 160ms ease';
+        createdItem.style.opacity = '0';
+        createdItem.style.transform = 'translateX(8px)';
+        window.setTimeout(() => createdItem.remove(), 180);
+      }
+      const remaining = subtasks.length - index - 1;
+      status.textContent = `${created.key ?? 'Sub-task'} created. ${remaining} remaining.`;
+      if (index < subtasks.length - 1) await delay(400);
+    }
+    status.textContent = `Created ${subtasks.length} sub-task${subtasks.length === 1 ? '' : 's'}${createdKeys.length ? `: ${createdKeys.join(', ')}` : ''}.`;
+    create.textContent = 'Created';
+    create.setAttribute('disabled', 'true');
+    create.style.background = '#0c7a3e';
+    create.style.cursor = 'default';
+    list.remove();
+  });
+  actions.appendChild(create);
+  banner.append(header, status, list, actions);
+  document.body.appendChild(banner);
 }
 
 function setJiraPreviewBannerInPage(
@@ -1126,6 +1442,8 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
   const [issueKey, setIssueKey] = useState<string | null>(null);
   const [description, setDescription] = useState('');
   const [pendingEnhancement, setPendingEnhancement] = useState<PendingEnhancement | null>(null);
+  const [pendingSubtaskGeneration, setPendingSubtaskGeneration] =
+    useState<PendingSubtaskGeneration | null>(null);
   const [storyPoints, setStoryPoints] = useState('');
   const [acceptanceCriteria, setAcceptanceCriteria] = useState('');
   const [components, setComponents] = useState<string[]>([]);
@@ -1135,6 +1453,10 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
   const [resultHistory, setResultHistory] = useState<StoredEnhancementResult[]>([]);
   const [subtaskHistory, setSubtaskHistory] = useState<StoredSubtaskGeneration[]>([]);
   const [editedSubtasks, setEditedSubtasks] = useState<GeneratedSubtask[]>([]);
+  const [reviewedSubtaskGenerationId, setReviewedSubtaskGenerationId] = useState<string | null>(
+    null,
+  );
+  const [availableSubtaskCategories, setAvailableSubtaskCategories] = useState<string[]>([]);
   const [jiraHistoryEntries, setJiraHistoryEntries] = useState<HistoryEntry[]>([]);
   const [jiraHistoryStatus, setJiraHistoryStatus] = useState<string | null>(null);
   const [selectedHistoryEntry, setSelectedHistoryEntry] = useState<HistoryEntry | null>(null);
@@ -1159,6 +1481,7 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
   const processingLogRef = useRef<HTMLDivElement | null>(null);
   const processingPinnedToBottom = useRef(true);
   const skipNextHistorySave = useRef(false);
+  const skipNextSubtaskHistorySave = useRef(false);
   const isRestoringHistoryScroll = useRef(false);
 
   useEffect(() => {
@@ -1173,13 +1496,18 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
         setIssueKey(session.issueKey);
         setDescription(session.description);
         setStoryPoints(session.storyPoints);
-        setAcceptanceCriteria(session.acceptanceCriteria);
+        setAcceptanceCriteria(sanitizeAcceptanceCriteria(session.acceptanceCriteria) ?? '');
         setComponents(session.components);
         setIssueType(session.issueType);
         setFieldIds(session.fieldIds ?? {});
         setImageAttachments(session.images);
-        setPendingEnhancement(session.pendingEnhancement);
-        setCurrentView('review-request');
+        if (session.pendingEnhancement) {
+          setPendingEnhancement(sanitizePendingEnhancement(session.pendingEnhancement));
+        }
+        if (session.pendingSubtaskGeneration) {
+          setPendingSubtaskGeneration(session.pendingSubtaskGeneration);
+        }
+        setCurrentView(session.initialView ?? 'review-request');
         return;
       }
     }
@@ -1217,7 +1545,7 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
           if (!scriptError && pageResult?.description) {
             setDescription(pageResult.description);
             setStoryPoints(pageResult.storyPoints ?? '');
-            setAcceptanceCriteria(pageResult.acceptanceCriteria ?? '');
+            setAcceptanceCriteria(sanitizeAcceptanceCriteria(pageResult.acceptanceCriteria) ?? '');
             setFieldIds({});
             setImageAttachments(pageResult.images);
             setDescriptionReadStatus(
@@ -1287,6 +1615,16 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
   }, [autoReadDescription, readDescriptionFromCurrentPage]);
 
   useEffect(() => {
+    if (!issueKey || !activeTabUrl) {
+      setAvailableSubtaskCategories([]);
+      return;
+    }
+    fetchAvailableSubtaskCategories(issueKey, activeTabUrl)
+      .then(setAvailableSubtaskCategories)
+      .catch(() => setAvailableSubtaskCategories([]));
+  }, [activeTabUrl, issueKey]);
+
+  useEffect(() => {
     if (!issueKey) return;
     const history = loadResultHistory(issueKey);
     setResultHistory(history);
@@ -1347,6 +1685,7 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
   const promptPreview = pendingEnhancement
     ? buildEnhancementPrompt(enhancementFields, pendingEnhancement.customPrompt, pendingEnhancement)
     : JSON.stringify(enhancementFields, null, 2);
+  const harnessCommandPreview = buildHarnessCommandPreview(pendingEnhancement, promptPreview);
   const canRetryExpiredAwsSso =
     Boolean(pendingEnhancement && issueKey && error) &&
     /aws sso session expired|aws sso login|token is expired/i.test(error ?? '');
@@ -1362,7 +1701,7 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
       env?: Record<string, string>,
       safetyMode?: HarnessSafetyMode,
     ) => {
-      const pending = {
+      const pending = sanitizePendingEnhancement({
         mode,
         app,
         modelProvider,
@@ -1371,7 +1710,7 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
         customPrompt,
         env,
         safetyMode,
-      };
+      });
       if (!fullPage && activeTabId !== null) {
         const sessionId = crypto.randomUUID();
         const session: FullPageSession = {
@@ -1386,6 +1725,7 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
           fieldIds,
           images: imageAttachments,
           pendingEnhancement: pending,
+          initialView: 'review-request',
         };
         localStorage.setItem(`jiraEnhancer.fullPageSession.${sessionId}`, JSON.stringify(session));
         chrome.tabs.create({
@@ -1425,8 +1765,50 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
       reusableSessionRef?: HarnessSessionRef,
       reuseSession?: boolean,
       titleOnly?: boolean,
+      subtaskCategories?: string[],
+      titleMaxLength?: number,
     ) => {
       if (!issueKey) return;
+      const pending: PendingSubtaskGeneration = {
+        mode,
+        app,
+        modelProvider,
+        model,
+        launchPath,
+        customPrompt,
+        env,
+        safetyMode,
+        sessionRef: reusableSessionRef,
+        reuseSession,
+        titleOnly,
+        availableSubtaskCategories: subtaskCategories,
+        titleMaxLength,
+      };
+      if (!fullPage && activeTabId !== null) {
+        const sessionId = crypto.randomUUID();
+        const session: FullPageSession = {
+          sourceTabId: activeTabId,
+          sourceTabUrl: activeTabUrl,
+          issueKey,
+          description,
+          storyPoints,
+          acceptanceCriteria,
+          components,
+          issueType,
+          fieldIds,
+          images: imageAttachments,
+          pendingSubtaskGeneration: pending,
+          initialView: 'subtask-activity',
+        };
+        localStorage.setItem(`jiraEnhancer.fullPageSession.${sessionId}`, JSON.stringify(session));
+        chrome.tabs.create({
+          url: chrome.runtime.getURL(`src/full-page/index.html?session=${sessionId}`),
+        });
+        window.close();
+        return;
+      }
+      setPendingSubtaskGeneration(null);
+      setReviewedSubtaskGenerationId(null);
       setCurrentView('subtask-activity');
       generateSubtasks(
         issueKey,
@@ -1443,10 +1825,59 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
         reusableSessionRef,
         reuseSession,
         titleOnly,
+        subtaskCategories,
       );
     },
-    [enhancedFields, enhancementFields, generateSubtasks, issueKey],
+    [
+      acceptanceCriteria,
+      activeTabId,
+      activeTabUrl,
+      components,
+      description,
+      enhancedFields,
+      enhancementFields,
+      fieldIds,
+      fullPage,
+      generateSubtasks,
+      imageAttachments,
+      issueKey,
+      issueType,
+      storyPoints,
+    ],
   );
+
+  useEffect(() => {
+    if (!fullPage || !issueKey || !pendingSubtaskGeneration) return;
+    const pending = pendingSubtaskGeneration;
+    setPendingSubtaskGeneration(null);
+    setReviewedSubtaskGenerationId(null);
+    setCurrentView('subtask-activity');
+    generateSubtasks(
+      issueKey,
+      enhancementFields,
+      enhancedFields ?? undefined,
+      pending.mode,
+      pending.app,
+      pending.modelProvider,
+      pending.model,
+      pending.launchPath,
+      pending.customPrompt,
+      pending.env,
+      pending.safetyMode,
+      pending.sessionRef,
+      pending.reuseSession,
+      pending.titleOnly,
+      pending.availableSubtaskCategories,
+      pending.titleMaxLength,
+    );
+  }, [
+    enhancedFields,
+    enhancementFields,
+    fullPage,
+    generateSubtasks,
+    issueKey,
+    pendingSubtaskGeneration,
+  ]);
 
   const executeEnhancement = useCallback(() => {
     if (!issueKey || !pendingEnhancement) return;
@@ -1548,6 +1979,13 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
     () => getProcessingRows(subtaskHarnessEvents),
     [subtaskHarnessEvents],
   );
+  const subtaskReviewTitleOnly =
+    editedSubtasks.length > 0 &&
+    editedSubtasks.every(
+      (subtask) =>
+        !subtask.description.trim() &&
+        (!subtask.acceptanceCriteria || subtask.acceptanceCriteria.length === 0),
+    );
   const compareLeft = useMemo(
     () => resultHistory.find((result) => result.id === compareLeftId) ?? null,
     [resultHistory, compareLeftId],
@@ -1831,6 +2269,69 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
     }
   };
 
+  const keptEditedSubtasks = useMemo(
+    () => editedSubtasks.filter((subtask) => subtask.required),
+    [editedSubtasks],
+  );
+
+  const previewSubtasksInSourceTab = (subtasks = keptEditedSubtasks) => {
+    if (!issueKey || activeTabId === null || subtasks.length === 0) return;
+    chrome.scripting.executeScript(
+      {
+        target: { tabId: activeTabId },
+        func: setSubtaskPreviewBannerInPage,
+        args: [issueKey, subtasks],
+      },
+      () => focusSourceTab(activeTabId),
+    );
+  };
+
+  const createSubtasksWithJiraApi = async (subtasks = keptEditedSubtasks) => {
+    if (!issueKey || !activeTabUrl || subtasks.length === 0) return;
+    setApplyStatus(`Creating ${subtasks.length} Jira sub-task${subtasks.length === 1 ? '' : 's'}…`);
+    const { origin, hostname } = new URL(activeTabUrl);
+    const isCloud = hostname.endsWith('.atlassian.net');
+    const projectKey = issueKey.split('-')[0];
+    const apiVersion = isCloud ? '3' : '2';
+    const createdKeys: string[] = [];
+    const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    for (let index = 0; index < subtasks.length; index += 1) {
+      const subtask = subtasks[index];
+      setApplyStatus(`Creating Jira sub-task ${index + 1}/${subtasks.length}: ${subtask.title}`);
+      const fields: Record<string, unknown> = {
+        project: { key: projectKey },
+        parent: { key: issueKey },
+        summary: subtask.title,
+        issuetype: { name: subtask.category },
+      };
+      if (subtask.description.trim()) {
+        fields.description = isCloud
+          ? markdownToAdf(subtask.description)
+          : markdownToJiraMarkup(subtask.description);
+      }
+      const response = await fetch(`${origin}/rest/api/${apiVersion}/issue`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ fields }),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        setApplyStatus(
+          `Jira sub-task creation failed (${response.status}) for "${subtask.title}". ${text.slice(0, 240)}`,
+        );
+        return;
+      }
+      const created = (await response.json().catch(() => ({}))) as { key?: string };
+      if (created.key) createdKeys.push(created.key);
+      if (index < subtasks.length - 1) await delay(400);
+    }
+    setApplyStatus(
+      `Created ${subtasks.length} Jira sub-task${subtasks.length === 1 ? '' : 's'}${createdKeys.length ? `: ${createdKeys.join(', ')}` : ''}.`,
+    );
+    if (activeTabId !== null) focusSourceTab(activeTabId);
+  };
+
   const applyPreviewedFieldsWithJiraApi = async (fieldsToApply = previewedFields) => {
     if (!fieldsToApply || !issueKey || !activeTabUrl) return;
     setApplyStatus('Saving previewed fields to Jira…');
@@ -1853,27 +2354,50 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
         : fieldsToApply.acceptanceCriteria;
     }
 
-    const body = JSON.stringify({ fields });
-    const put = (apiVersion: '3' | '2') =>
+    const put = (apiVersion: '3' | '2', nextFields: Record<string, unknown>) =>
       fetch(`${origin}/rest/api/${apiVersion}/issue/${encodeURIComponent(issueKey)}`, {
         method: 'PUT',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body,
+        body: JSON.stringify({ fields: nextFields }),
       });
 
-    let response = await put(isCloud ? '3' : '2');
-    if (isCloud && !response.ok) response = await put('2');
+    const apiVersion = isCloud ? '3' : '2';
+    let response = await put(apiVersion, fields);
+    if (isCloud && !response.ok) response = await put('2', fields);
+    let skippedFieldIds: string[] = [];
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      setApplyStatus(`Jira save failed (${response.status}). ${text.slice(0, 240)}`);
-      return;
+      const rejectedFieldIds = parseRejectedJiraFieldIds(text).filter(
+        (fieldId) => fieldId in fields,
+      );
+      if (rejectedFieldIds.length > 0) {
+        const retryFields = { ...fields };
+        for (const fieldId of rejectedFieldIds) delete retryFields[fieldId];
+        if (Object.keys(retryFields).length > 0) {
+          skippedFieldIds = rejectedFieldIds;
+          setApplyStatus(
+            `Jira rejected ${rejectedFieldIds.join(', ')} because it is not editable on this screen. Retrying remaining fields…`,
+          );
+          response = await put(apiVersion, retryFields);
+          if (isCloud && !response.ok) response = await put('2', retryFields);
+        }
+      }
+      if (!response.ok) {
+        const retryText = response.bodyUsed ? text : await response.text().catch(() => text);
+        setApplyStatus(`Jira save failed (${response.status}). ${retryText.slice(0, 240)}`);
+        return;
+      }
     }
 
     setDescription(fieldsToApply.description);
     setStoryPoints(fieldsToApply.storyPoints ?? '');
     setAcceptanceCriteria(fieldsToApply.acceptanceCriteria ?? '');
-    setApplyStatus('Saved to Jira. Refresh the issue if Jira does not update immediately.');
+    setApplyStatus(
+      skippedFieldIds.length > 0
+        ? `Saved editable fields to Jira. Skipped ${skippedFieldIds.join(', ')} because Jira says the field is not editable on this screen.`
+        : 'Saved to Jira. Refresh the issue if Jira does not update immediately.',
+    );
     setPreviewedFields(null);
     setPreviewedSourceId(null);
     clearPreviewState(issueKey);
@@ -1889,15 +2413,20 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
     if (subtaskStatus !== 'complete' || !subtaskResult || !issueKey) return;
     setCurrentView('subtask-review');
     setEditedSubtasks(subtaskResult.subtasks);
+    if (skipNextSubtaskHistorySave.current) {
+      skipNextSubtaskHistorySave.current = false;
+      return;
+    }
     const savedResult: StoredSubtaskGeneration = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      id: reviewedSubtaskGenerationId ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       issueKey,
       createdAt: Date.now(),
       result: subtaskResult,
       sessionRef: subtaskSessionRef ?? undefined,
     };
+    setReviewedSubtaskGenerationId(savedResult.id);
     setSubtaskHistory(saveSubtaskGenerationToHistory(savedResult));
-  }, [issueKey, subtaskResult, subtaskSessionRef, subtaskStatus]);
+  }, [issueKey, reviewedSubtaskGenerationId, subtaskResult, subtaskSessionRef, subtaskStatus]);
 
   const handleEdit = () => {
     setPreviewedFields(null);
@@ -2306,6 +2835,7 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
               reusableSession={enhancementSessionRef}
               onGenerate={handleGenerateSubtasks}
               isProcessing={isSubtaskProcessing}
+              availableSubtaskCategories={availableSubtaskCategories}
             />
 
             {subtaskHistory.length > 0 && (
@@ -2323,12 +2853,26 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
                           type="button"
                           className="btn btn-default"
                           onClick={() => {
+                            skipNextSubtaskHistorySave.current = true;
                             loadCompletedSubtaskResult(entry.result, entry.sessionRef);
                             setEditedSubtasks(entry.result.subtasks);
+                            setReviewedSubtaskGenerationId(entry.id);
                             setCurrentView('subtask-review');
                           }}
                         >
                           Review without rerun
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-subtle"
+                          onClick={() => {
+                            if (!issueKey) return;
+                            setSubtaskHistory(
+                              removeSubtaskGenerationFromHistory(issueKey, entry.id),
+                            );
+                          }}
+                        >
+                          Remove
                         </button>
                       </div>
                     </div>
@@ -2363,6 +2907,14 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
               </div>
             )}
             <div className="processing-panel">
+              <div className="harness-activity-header">
+                <div>
+                  <div className="field-label">Processing</div>
+                  <p className="processing-help">
+                    Readable harness reasoning, tool calls, and generated sub-task output.
+                  </p>
+                </div>
+              </div>
               <div className="processing-log">
                 {subtaskProcessingRows.length === 0 ? (
                   <div className="description-read-status">Waiting for harness processing…</div>
@@ -2384,13 +2936,68 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
             <div className="review-header">
               <h2>Review generated sub-task definitions</h2>
               <p>
-                Edit the generated sub-tasks before accepting them into local history. Jira creation
-                will be an explicit later step.
+                {subtaskReviewTitleOnly
+                  ? 'Review the generated Jira sub-task titles before accepting them into local history. Title-only mode intentionally omits descriptions and acceptance criteria.'
+                  : 'Edit the generated sub-tasks before accepting them into local history. Jira creation will be an explicit later step.'}
               </p>
             </div>
-            <div className="field-review-grid">
+            <div className="metadata-grid">
+              <div>
+                <strong>Generated</strong>
+                <span>{editedSubtasks.length} sub-tasks</span>
+              </div>
+              <div>
+                <strong>Kept</strong>
+                <span>{editedSubtasks.filter((subtask) => subtask.required).length} selected</span>
+              </div>
+              <div>
+                <strong>Mode</strong>
+                <span>{subtaskReviewTitleOnly ? 'Titles only' : 'Titles + descriptions'}</span>
+              </div>
+              <div>
+                <strong>Jira sub-task types</strong>
+                <span className="metadata-wrap">
+                  {availableSubtaskCategories.length > 0
+                    ? availableSubtaskCategories.join(' · ')
+                    : 'Unavailable — category is editable fallback text'}
+                </span>
+              </div>
+              <div>
+                <strong>Destination</strong>
+                <span>Local history only</span>
+              </div>
+            </div>
+            {availableSubtaskCategories.length === 0 && (
+              <div className="description-read-status">
+                Jira sub-task types could not be loaded, so generated categories may be fallback
+                labels such as copilotQuality instead of real Jira sub-task types.
+              </div>
+            )}
+            <div className="field-review-grid subtask-review-grid">
               {editedSubtasks.map((subtask, index) => (
-                <div className="field-review-card" key={subtask.id || index}>
+                <div className="field-review-card subtask-review-card" key={subtask.id || index}>
+                  <div className="subtask-card-header">
+                    <div>
+                      <span className="field-label">Sub-task {index + 1}</span>
+                      <h3>{subtask.title || 'Untitled sub-task'}</h3>
+                    </div>
+                    <label className="checkbox-option">
+                      <input
+                        type="checkbox"
+                        checked={subtask.required}
+                        onChange={(event) =>
+                          setEditedSubtasks((items) =>
+                            items.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, required: event.target.checked }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <span>Keep</span>
+                    </label>
+                  </div>
                   <label className="field-label">Title</label>
                   <input
                     className="text-input"
@@ -2403,52 +3010,114 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
                       )
                     }
                   />
-                  <label className="field-label">Category</label>
-                  <input
-                    className="text-input"
-                    value={subtask.category}
-                    onChange={(event) =>
-                      setEditedSubtasks((items) =>
-                        items.map((item, itemIndex) =>
-                          itemIndex === index
-                            ? {
-                                ...item,
-                                category: event.target.value as GeneratedSubtask['category'],
-                              }
-                            : item,
-                        ),
-                      )
-                    }
-                  />
-                  <label className="checkbox-option">
-                    <input
-                      type="checkbox"
-                      checked={subtask.required}
-                      onChange={(event) =>
-                        setEditedSubtasks((items) =>
-                          items.map((item, itemIndex) =>
-                            itemIndex === index
-                              ? { ...item, required: event.target.checked }
-                              : item,
-                          ),
-                        )
-                      }
-                    />
-                    <span>Required</span>
-                  </label>
-                  <label className="field-label">Description</label>
-                  <textarea
-                    className="review-output field-review-editor"
-                    value={subtask.description}
-                    rows={8}
-                    onChange={(event) =>
-                      setEditedSubtasks((items) =>
-                        items.map((item, itemIndex) =>
-                          itemIndex === index ? { ...item, description: event.target.value } : item,
-                        ),
-                      )
-                    }
-                  />
+                  <div className="subtask-inline-fields">
+                    <div>
+                      <label className="field-label">Category</label>
+                      {availableSubtaskCategories.length > 0 ? (
+                        <select
+                          className="provider-select"
+                          value={subtask.category}
+                          onChange={(event) =>
+                            setEditedSubtasks((items) =>
+                              items.map((item, itemIndex) =>
+                                itemIndex === index
+                                  ? {
+                                      ...item,
+                                      category: event.target.value as GeneratedSubtask['category'],
+                                    }
+                                  : item,
+                              ),
+                            )
+                          }
+                        >
+                          {!availableSubtaskCategories.includes(subtask.category) && (
+                            <option value={subtask.category}>
+                              {subtask.category || 'Unassigned'}
+                            </option>
+                          )}
+                          {availableSubtaskCategories.map((category) => (
+                            <option key={category} value={category}>
+                              {category}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          className="text-input"
+                          value={subtask.category}
+                          onChange={(event) =>
+                            setEditedSubtasks((items) =>
+                              items.map((item, itemIndex) =>
+                                itemIndex === index
+                                  ? {
+                                      ...item,
+                                      category: event.target.value as GeneratedSubtask['category'],
+                                    }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                      )}
+                    </div>
+                    <div>
+                      <label className="field-label">Rationale</label>
+                      <input
+                        className="text-input"
+                        value={subtask.rationale ?? ''}
+                        onChange={(event) =>
+                          setEditedSubtasks((items) =>
+                            items.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, rationale: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
+                  {!subtaskReviewTitleOnly && (
+                    <>
+                      <label className="field-label">Description</label>
+                      <textarea
+                        className="review-output field-review-editor"
+                        value={subtask.description}
+                        rows={6}
+                        onChange={(event) =>
+                          setEditedSubtasks((items) =>
+                            items.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, description: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <label className="field-label">Acceptance criteria</label>
+                      <textarea
+                        className="review-output field-review-editor compact-review-editor"
+                        value={(subtask.acceptanceCriteria ?? []).join('\n')}
+                        rows={3}
+                        placeholder="One criterion per line…"
+                        onChange={(event) =>
+                          setEditedSubtasks((items) =>
+                            items.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? {
+                                    ...item,
+                                    acceptanceCriteria: event.target.value
+                                      .split('\n')
+                                      .map((line) => line.trim())
+                                      .filter(Boolean),
+                                  }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                    </>
+                  )}
                 </div>
               ))}
             </div>
@@ -2464,19 +3133,43 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
                 className="btn btn-primary"
                 onClick={() => {
                   if (!issueKey || !subtaskResult) return;
-                  const editedResult = { ...subtaskResult, subtasks: editedSubtasks };
+                  const editedResult = { ...subtaskResult, subtasks: keptEditedSubtasks };
                   const savedResult: StoredSubtaskGeneration = {
-                    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                    id:
+                      reviewedSubtaskGenerationId ??
+                      `${Date.now()}-${Math.random().toString(36).slice(2)}`,
                     issueKey,
                     createdAt: Date.now(),
                     result: editedResult,
                     sessionRef: subtaskSessionRef ?? undefined,
                   };
+                  setReviewedSubtaskGenerationId(savedResult.id);
                   setSubtaskHistory(saveSubtaskGenerationToHistory(savedResult));
+                  localStorage.setItem(popupViewStorageKey(issueKey), 'subtasks');
                   setCurrentView('subtasks');
+                  if (fullPage && activeTabId !== null) {
+                    focusSourceTab(activeTabId);
+                    window.setTimeout(() => window.close(), 250);
+                  }
                 }}
               >
-                Accept generation
+                Save generation
+              </button>
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => previewSubtasksInSourceTab()}
+                disabled={keptEditedSubtasks.length === 0}
+              >
+                Preview in Jira
+              </button>
+              <button
+                type="button"
+                className="btn btn-default"
+                onClick={() => void createSubtasksWithJiraApi()}
+                disabled={keptEditedSubtasks.length === 0}
+              >
+                Create kept sub-tasks
               </button>
               <button
                 type="button"
@@ -2692,6 +3385,24 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
                         >
                           Apply
                         </button>
+                        <button
+                          type="button"
+                          className="btn btn-subtle"
+                          onClick={() => {
+                            if (!issueKey) return;
+                            const nextHistory = removeResultFromHistory(issueKey, result.id);
+                            setResultHistory(nextHistory);
+                            if (compareLeftId === result.id) setCompareLeftId('');
+                            if (compareRightId === result.id) setCompareRightId('');
+                            if (previewedSourceId === result.id) {
+                              setPreviewedFields(null);
+                              setPreviewedSourceId(null);
+                              clearPreviewState(issueKey);
+                            }
+                          }}
+                        >
+                          Remove
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -2735,6 +3446,12 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
                 <span>{pendingEnhancement?.launchPath || 'Configured project path'}</span>
               </div>
             </div>
+            <details className="review-command-details">
+              <summary>Harness command</summary>
+              <pre id="harness-command-preview" className="review-preformatted command-preview">
+                {harnessCommandPreview}
+              </pre>
+            </details>
             <div className="field-group">
               <label className="field-label" htmlFor="enhancement-input-preview">
                 Prompt sent to harness

@@ -155,9 +155,9 @@ const ok = true;
     expect(target.querySelector('tt')?.textContent).toBe('monospaced');
     expect(target.querySelector('a[href="https://atlassian.com"]')?.textContent).toBe('Atlassian');
     expect(target.querySelector('a[href="#anchor"]')?.textContent).toBe('anchor');
-    expect(
-      target.querySelector('a[href="mailto:user@example.com"]')?.textContent,
-    ).toBe('user@example.com');
+    expect(target.querySelector('a[href="mailto:user@example.com"]')?.textContent).toBe(
+      'user@example.com',
+    );
     expect(target.querySelector('a.attachment-title')?.textContent).toBe('attachment.ext');
     expect(target.querySelector('a.user-hover')?.textContent).toBe('Username');
     expect(target.querySelector('a[name="anchor"]')).not.toBeNull();
