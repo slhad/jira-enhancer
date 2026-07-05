@@ -7,18 +7,6 @@ import {
   type SubtaskGenerationResult,
 } from '@jira-enhancer/shared';
 
-const SUBTASK_CATEGORIES = new Set<GeneratedSubtaskCategory>([
-  'implementation',
-  'pullRequest',
-  'copilotQuality',
-  'qaTests',
-  'devTests',
-  'unitTests',
-  'documentation',
-  'releaseProcedure',
-  'other',
-]);
-
 export function parseStructuredEnhancementOutput(output: string): StructuredEnhancementResult {
   const jsonText = extractJson(output);
   let parsed: unknown;
@@ -90,7 +78,7 @@ export function parseSubtaskGenerationOutput(
         id: stringField(record.id) || slugify(title) || `subtask-${index + 1}`,
         title,
         description,
-        category: SUBTASK_CATEGORIES.has(category) ? category : 'other',
+        category: category || 'other',
         required: typeof record.required === 'boolean' ? record.required : true,
         ...(stringField(record.rationale) ? { rationale: stringField(record.rationale) } : {}),
         ...(acceptanceCriteria && acceptanceCriteria.length > 0 ? { acceptanceCriteria } : {}),

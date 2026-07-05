@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MessageType } from '@jira-enhancer/shared';
+import { buildSubtaskGenerationPrompt, MessageType } from '@jira-enhancer/shared';
+import { filterIgnoredModelProviders } from '../model-filter';
 import type {
   EnhanceMode,
   HarnessSafetyMode,
@@ -28,8 +29,11 @@ interface SubtaskPanelProps {
     sessionRef?: HarnessSessionRef,
     reuseSession?: boolean,
     titleOnly?: boolean,
+    availableSubtaskCategories?: string[],
+    titleMaxLength?: number,
   ) => void;
   isProcessing: boolean;
+  availableSubtaskCategories?: string[];
 }
 
 interface SavedSubtaskPrompt {
@@ -86,6 +90,7 @@ export function SubtaskPanel({
   reusableSession,
   onGenerate,
   isProcessing,
+  availableSubtaskCategories = [],
 }: SubtaskPanelProps) {
   const [mode, setMode] = useState<EnhanceMode>(
     () => (localStorage.getItem('jiraEnhancer.subtaskMode') as EnhanceMode) || 'default',
@@ -120,6 +125,9 @@ export function SubtaskPanel({
   const [titleOnly, setTitleOnly] = useState(
     () => localStorage.getItem('jiraEnhancer.subtaskTitleOnly') !== 'false',
   );
+  const [titleMaxLength, setTitleMaxLength] = useState(
+    () => localStorage.getItem('jiraEnhancer.subtaskTitleMaxLength') || '80',
+  );
   const [models, setModels] = useState<ModelInfo[]>([]);
   const previousAppRef = useRef(app);
   const skipNextEnvSaveRef = useRef(false);
@@ -140,6 +148,9 @@ export function SubtaskPanel({
     () => localStorage.setItem('jiraEnhancer.subtaskTitleOnly', String(titleOnly)),
     [titleOnly],
   );
+  useEffect(() => {
+    localStorage.setItem('jiraEnhancer.subtaskTitleMaxLength', titleMaxLength);
+  }, [titleMaxLength]);
   useEffect(
     () => localStorage.setItem('jiraEnhancer.subtaskPromptTitleDraft', customPromptTitle),
     [customPromptTitle],
@@ -197,7 +208,7 @@ export function SubtaskPanel({
       (response?: ListModelsResponse) => {
         if (chrome.runtime.lastError || !response) return;
         if (response.type === MessageType.LIST_MODELS_RESPONSE && response.id === id) {
-          setModels(response.models);
+          setModels(filterIgnoredModelProviders(response.models));
         }
       },
     );
@@ -269,37 +280,86 @@ export function SubtaskPanel({
   };
 
   const selectedSession = locked ? reusableSession : undefined;
+  const selectedApp = selectedSession?.app ?? app;
+  const selectedProvider = (selectedSession?.provider ?? modelProvider) || undefined;
+  const selectedModel = (selectedSession?.model ?? model) || undefined;
+  const selectedLaunchPath = (selectedSession?.launchPath ?? launchPath) || undefined;
+  const selectedSafetyMode = selectedSession?.safetyMode ?? safetyMode;
   const sessionLabel = reusableSession
     ? `${reusableSession.app === 'pi' ? 'Pi' : 'OpenCode'} · ${reusableSession.model ?? 'Default model'} · ${reusableSession.launchPath ?? 'Configured path'}`
     : 'Unavailable until an enhancement session exists for this issue';
   const modelConfigLabel = `${modelProvider || 'Default provider'} → ${model || 'Default model'}`;
+  const titleMaxLengthNumber = Math.max(20, Number(titleMaxLength) || 80);
+  const fieldSummary =
+    [
+      fields.description ? 'Description' : undefined,
+      fields.acceptanceCriteria !== undefined ? 'Acceptance Criteria' : undefined,
+      fields.storyPoints !== undefined ? 'Story Points' : undefined,
+    ]
+      .filter(Boolean)
+      .join(' · ') || 'No fields loaded';
+  const promptPreview = buildSubtaskGenerationPrompt(
+    issueKey,
+    fields,
+    enhancedFields,
+    mode === 'custom' ? customPrompt : undefined,
+    {
+      modelProvider: selectedProvider,
+      model: selectedModel,
+      safetyMode: selectedSafetyMode,
+      sessionRef: selectedSession,
+      reuseSession: Boolean(selectedSession),
+      subtaskTitleOnly: titleOnly,
+      availableSubtaskCategories,
+      subtaskTitleMaxLength: titleMaxLengthNumber,
+    },
+  );
 
   return (
-    <div className="enhance-panel subtask-panel">
-      <div className="detected-metadata">
-        <div className="issue-key-badge">
-          <span className="issue-key-label">Issue</span>
-          <span className="issue-key-value">{issueKey}</span>
+    <div className="review-panel subtask-panel">
+      <div className="review-header">
+        <h2>Generate sub-task definitions</h2>
+        <p>
+          Review the issue context and harness settings before asking the harness to propose
+          editable Jira sub-task definitions. No Jira issues are created by this step.
+        </p>
+      </div>
+      <div className="metadata-grid">
+        <div>
+          <strong>Issue</strong>
+          <span>{issueKey}</span>
         </div>
-        <div className="issue-key-badge">
-          <span className="issue-key-label">Context</span>
-          <span className="issue-key-value">
-            {enhancedFields ? 'Enhanced result available' : 'Raw Jira fields'}
-          </span>
+        <div>
+          <strong>Context</strong>
+          <span>{enhancedFields ? 'Enhanced result available' : 'Raw Jira fields'}</span>
         </div>
-        <div className="issue-key-badge">
-          <span className="issue-key-label">Fields</span>
-          <span className="issue-key-value">
-            {[
-              fields.description ? 'Description' : undefined,
-              fields.acceptanceCriteria !== undefined ? 'AC' : undefined,
-              fields.storyPoints !== undefined ? 'Story Points' : undefined,
-            ]
-              .filter(Boolean)
-              .join(' · ') || 'No fields loaded'}
+        <div>
+          <strong>Fields</strong>
+          <span>{fieldSummary}</span>
+        </div>
+        <div>
+          <strong>Output</strong>
+          <span>{titleOnly ? 'Titles only' : 'Titles + descriptions'}</span>
+        </div>
+        <div>
+          <strong>Title limit</strong>
+          <span>{titleMaxLengthNumber} characters</span>
+        </div>
+        <div>
+          <strong>Jira sub-task types</strong>
+          <span className="metadata-wrap">
+            {availableSubtaskCategories.length > 0
+              ? availableSubtaskCategories.join(' · ')
+              : 'Unavailable — using editable fallback categories'}
           </span>
         </div>
       </div>
+      {availableSubtaskCategories.length === 0 && (
+        <div className="description-read-status">
+          Jira sub-task types could not be loaded from create metadata. Category remains editable
+          free text and the harness will use fallback task families.
+        </div>
+      )}
 
       <div className="field-group launch-config-card mode-config-card">
         <div className="launch-config-header">
@@ -467,9 +527,25 @@ export function SubtaskPanel({
               />
               <span>Generate titles only</span>
             </label>
+            <div className="field-group compact-field-group">
+              <label className="field-label" htmlFor="subtask-title-max-length">
+                Maximum title length
+              </label>
+              <input
+                id="subtask-title-max-length"
+                className="text-input"
+                type="number"
+                min="20"
+                max="255"
+                value={titleMaxLength}
+                disabled={isProcessing}
+                onChange={(event) => setTitleMaxLength(event.target.value)}
+              />
+            </div>
             <div className="field-help">
               Enabled by default for teams that only use the Jira sub-task summary/title. Disable it
-              to ask the harness for developer-ready sub-task descriptions too.
+              to ask the harness for developer-ready sub-task descriptions too. The title limit is
+              passed to the harness and defaults to 80 characters.
             </div>
           </>
         )}
@@ -703,28 +779,37 @@ export function SubtaskPanel({
         )}
       </div>
 
-      <button
-        type="button"
-        className="btn btn-primary enhance-btn"
-        disabled={isProcessing || !issueKey || !fields.description}
-        onClick={() =>
-          onGenerate(
-            mode,
-            selectedSession?.app ?? app,
-            (selectedSession?.provider ?? modelProvider) || undefined,
-            (selectedSession?.model ?? model) || undefined,
-            (selectedSession?.launchPath ?? launchPath) || undefined,
-            mode === 'custom' ? customPrompt : undefined,
-            harnessEnv,
-            selectedSession?.safetyMode ?? safetyMode,
-            selectedSession,
-            Boolean(selectedSession),
-            titleOnly,
-          )
-        }
-      >
-        {isProcessing ? 'Generating…' : 'Review sub-task generation'}
-      </button>
+      <details className="review-command-details">
+        <summary>Prompt sent to harness</summary>
+        <pre className="review-preformatted command-preview">{promptPreview}</pre>
+      </details>
+
+      <div className="action-bar">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={isProcessing || !issueKey || !fields.description}
+          onClick={() =>
+            onGenerate(
+              mode,
+              selectedApp,
+              selectedProvider,
+              selectedModel,
+              selectedLaunchPath,
+              mode === 'custom' ? customPrompt : undefined,
+              harnessEnv,
+              selectedSafetyMode,
+              selectedSession,
+              Boolean(selectedSession),
+              titleOnly,
+              availableSubtaskCategories,
+              titleMaxLengthNumber,
+            )
+          }
+        >
+          {isProcessing ? 'Generating…' : 'Generate sub-tasks'}
+        </button>
+      </div>
     </div>
   );
 }

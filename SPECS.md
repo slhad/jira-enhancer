@@ -26,6 +26,7 @@ The product must support:
 ## 2. Documentation contract
 
 - `README.md` is an overview + install/setup/development guide. It should not be treated as the full behavior spec.
+- `README.md` must include Mermaid flowcharts for the main Issue enhancement and Sub-task generation flows. When either flow changes materially, update those charts in the same change so they stay synchronized with this spec.
 - `SPECS.md` is the product/technical specification and must be updated with behavior changes.
 - `AGENTS.md` is the coding-agent guide and must point agents to both files.
 
@@ -96,6 +97,10 @@ Order of attempts:
    - If `fields.components` exists, store component names.
    - Use `names` metadata to find custom fields named `Story Points`, `Story point estimate`, and `Acceptance Criteria` regardless of Jira custom-field IDs.
    - Read `fields.issuetype.name`; story points and acceptance criteria are shown and sent to the harness only when the issue type is Story.
+
+- If `VITE_ACCEPTANCE_CRITERIA_IGNORE_PATTERN` is set in `.env`, Acceptance Criteria values matching that case-insensitive regex are treated as placeholder/test content and loaded as an empty field.
+- If `VITE_IGNORED_MODEL_PROVIDERS` is set in `.env`, provider/model dropdowns hide models whose provider ID appears in that comma-separated list.
+
 2. **Page script fallback** via `chrome.scripting.executeScript`:
    - First looks for an active Jira description editor textarea, especially Text mode.
    - Otherwise converts rendered description DOM to Markdown-like text.
@@ -113,20 +118,21 @@ The full-page review must:
 - keep the originating Jira tab ID and issue key from the popup session;
 - show harness activity and raw IPC behind the existing toggle;
 - show structured original/enhanced field cards;
+- show the harness command/IPC entrypoint that will be used to pass the prompt before the user starts enhancement;
 - make enhanced fields editable before validation;
 - preview the edited structured fields back in the originating Jira tab with `SET_JIRA_FIELDS` when requested.
 
-Current Jira preview is DOM-level only: it renders the enhanced description into the visible Jira page through the content script or `chrome.scripting.executeScript` fallback, refuses to overwrite an open Jira editor, and does not guarantee Jira persistence. A separate `Apply` action is enabled only after previewing; it attempts authenticated Jira REST write-back using the same browser session path as REST field loading. Story points and acceptance criteria are carried in the structured payload and are sent only when their Jira field IDs were discovered.
+Current Jira preview is DOM-level only: it renders the enhanced description into the visible Jira page through the content script or `chrome.scripting.executeScript` fallback, refuses to overwrite an open Jira editor, and does not guarantee Jira persistence. A separate `Apply` action is enabled only after previewing; it attempts authenticated Jira REST write-back using the same browser session path as REST field loading. Story points and acceptance criteria are carried in the structured payload and are sent only when their Jira field IDs were discovered. If Jira rejects a custom field as not editable on the current screen/unknown, Apply retries the remaining editable fields and reports the skipped field IDs.
 
 ### 5.4 Sub-task generation
 
-The popup/full-page UI exposes a top-level `Sub-tasks` tab alongside the default `Enhance Issue` flow. It generates editable Jira sub-task definitions; creating actual Jira issues is a separate future/explicit action and must not happen during generation.
+The popup/full-page UI exposes a top-level `Sub-tasks` tab alongside the default `Enhance Issue` flow. From the popup, starting sub-task generation opens the full-page Sub-tasks flow first so long-running harness progress and results are not lost when the popup closes. It generates editable Jira sub-task definitions; creating actual Jira issues is a separate future/explicit action and must not happen during generation.
 
-Sub-task generation uses `GENERATE_SUBTASKS_REQUEST` / `GENERATE_SUBTASKS_RESPONSE` and returns structured JSON containing `SubtaskGenerationResult.subtasks`. Default expected task families are Pull Request, Copilot Quality, QA Tests, Dev Tests, Unit Tests when needed, Documentation when needed, Release Procedure when needed, plus implementation sub-tasks inferred from the current Jira fields and any available enhanced fields. The Sub-tasks tab includes a persisted `Generate titles only` option stored in `localStorage['jiraEnhancer.subtaskTitleOnly']`; it defaults on, is shown under a collapsed-by-default `Sub-task Content` card, and instructs the harness to produce title-only sub-tasks with blank descriptions for teams that only use Jira sub-task summaries. Saved custom sub-task prompts support favorite/unfavorite and delete actions like saved enhancement prompts.
+Sub-task generation uses `GENERATE_SUBTASKS_REQUEST` / `GENERATE_SUBTASKS_RESPONSE` and returns structured JSON containing `SubtaskGenerationResult.subtasks`. The extension best-effort fetches Jira create metadata for the parent issue project and sends available Jira sub-task issue type/category names as `availableSubtaskCategories`; when present, the harness must use only those category values. If Jira metadata is unavailable, default expected task families are Pull Request, Copilot Quality, QA Tests, Dev Tests, Unit Tests when needed, Documentation when needed, Release Procedure when needed, plus implementation sub-tasks inferred from the current Jira fields and any available enhanced fields. The Sub-tasks tab includes a persisted `Generate titles only` option stored in `localStorage['jiraEnhancer.subtaskTitleOnly']`; it defaults on, is shown under a collapsed-by-default `Sub-task Content` card, and instructs the harness to produce title-only sub-tasks with blank descriptions and no acceptance criteria for teams that only use Jira sub-task summaries. The same card includes a persisted maximum sub-task title length (`localStorage['jiraEnhancer.subtaskTitleMaxLength']`), defaulting to 80 characters, which is sent to the harness as a strict title limit. In title-only review, the UI hides Description and Acceptance Criteria fields so users only review title/category/required/rationale metadata. Saved custom sub-task prompts support favorite/unfavorite and delete actions like saved enhancement prompts.
 
 Harness sessions are tracked with `HarnessSessionRef`. Enhancement responses store a session reference when available. The Sub-tasks tab shows a reuse indicator/toggle when a same-issue enhancement session is available; it defaults on. When session reuse is enabled, harness/provider/model/launch path/safety are locked to the reused session. Intentional same-issue session context reuse is allowed so the harness can use repository facts gathered during enhancement. Pi reuse uses `--session-id` instead of `--no-session`; read-only mode still applies `--tools read,grep,find,ls`. OpenCode reuse continues the known ACP session id when provided.
 
-Sub-task generation history is stored separately under `localStorage['jiraEnhancer.subtaskHistory.<issueKey>']`. Generated sub-tasks are reviewed as editable cards and can be accepted into local history or cancelled.
+Sub-task generation history is stored separately under `localStorage['jiraEnhancer.subtaskHistory.<issueKey>']`. Generated sub-tasks are reviewed as editable cards and can be saved into local history or cancelled. The review can preview kept sub-tasks on the source Jira page with a non-destructive overlay; that overlay offers an explicit create action only when all kept rows use loaded, real Jira sub-task issue types. Kept sub-tasks can also be explicitly created from the review page through Jira REST using the parent issue key, selected Jira sub-task type/category, summary/title, and optional description; creation is disabled if Jira sub-task metadata is unavailable or any kept category is not one of the loaded issue types. Creation is sequential one-by-one with visible progress to avoid overloading Jira automation, workflow, or macro processing. In full-page mode, saving focuses the source Jira tab and closes the full-page review; reopening the popup restores the Sub-tasks view from local history. Review uses a user-facing `Keep` checkbox (backed by the `required` field) to choose which generated sub-tasks are retained when saving or creating; unchecked rows are omitted. When Jira sub-task categories/types are available, category review uses a select box; when unavailable, the UI shows an explicit fallback warning and keeps category editable as free text.
 
 ### 5.5 History and rollback
 
@@ -498,8 +504,13 @@ pnpm format:check
 For extension UI/E2E:
 
 ```bash
-pnpm build
-pnpm exec playwright test --headed --project=chromium --workers=1
+pnpm test:e2e
+```
+
+`pnpm test:e2e` builds the workspace and runs Playwright under `xvfb-run` so the required headed Chromium extension session does not appear on the user's screen. For backup/debugging with a visible browser window, run:
+
+```bash
+pnpm test:e2e:headed
 ```
 
 Playwright loads `packages/extension/dist`. Full native messaging tests may require installed host manifest and matching extension ID.

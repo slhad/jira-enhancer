@@ -373,7 +373,9 @@ test.describe('Jira Enhancer Extension', () => {
         /As a user, I can reset my password\./,
       );
       await expect(page.locator('#enhancement-input-preview')).toHaveValue(/storyPoints/);
-      await expect(page.locator('#enhancement-input-preview')).not.toHaveValue(/private\.example\.com/);
+      await expect(page.locator('#enhancement-input-preview')).not.toHaveValue(
+        /private\.example\.com/,
+      );
     } finally {
       await page.close();
     }

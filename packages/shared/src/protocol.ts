@@ -50,16 +50,7 @@ export interface HarnessSessionRef {
   safetyMode?: HarnessSafetyMode;
 }
 
-export type GeneratedSubtaskCategory =
-  | 'implementation'
-  | 'pullRequest'
-  | 'copilotQuality'
-  | 'qaTests'
-  | 'devTests'
-  | 'unitTests'
-  | 'documentation'
-  | 'releaseProcedure'
-  | 'other';
+export type GeneratedSubtaskCategory = string;
 
 export interface GeneratedSubtask {
   id: string;
@@ -96,6 +87,10 @@ export interface LlmSelection {
   reuseSession?: boolean;
   /** When true for sub-task generation, only titles are needed; descriptions may be blank. */
   subtaskTitleOnly?: boolean;
+  /** Jira sub-task issue type/category names available for this parent issue/project. */
+  availableSubtaskCategories?: string[];
+  /** Maximum generated sub-task title/summary length. */
+  subtaskTitleMaxLength?: number;
 }
 
 export interface EnhanceRequest extends LlmSelection {
@@ -122,6 +117,10 @@ export interface GenerateSubtasksRequest extends LlmSelection {
   customPrompt?: string;
   /** When true, generated sub-tasks should only include titles; descriptions may be blank. */
   titleOnly?: boolean;
+  /** Jira sub-task issue type/category names available for this parent issue/project. */
+  availableSubtaskCategories?: string[];
+  /** Maximum generated sub-task title/summary length. */
+  subtaskTitleMaxLength?: number;
   provider: LlmProvider;
 }
 

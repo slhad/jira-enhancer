@@ -635,6 +635,32 @@ input[type='text']:disabled {
   white-space: pre-wrap;
 }
 
+.review-command-details {
+  margin: 12px 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-subtle);
+}
+
+.review-command-details summary {
+  cursor: pointer;
+  padding: 8px;
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.review-command-details .command-preview {
+  margin: 0 8px 8px;
+}
+
+.command-preview {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .metadata-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -665,6 +691,13 @@ input[type='text']:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.metadata-grid .metadata-wrap {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .launch-config-card {
@@ -1493,4 +1526,47 @@ input[type='text']:disabled {
   border-radius: 4px;
   background: var(--subtle-background-color);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.field-review-grid {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.field-review-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg);
+}
+
+.subtask-review-card {
+  background: var(--color-bg-input);
+}
+
+.subtask-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.subtask-card-header h3 {
+  margin: 3px 0 0;
+  font-size: 15px;
+}
+
+.subtask-inline-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.compact-review-editor {
+  min-height: 96px;
 }

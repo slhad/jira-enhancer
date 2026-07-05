@@ -44,6 +44,14 @@ export default defineConfig(({ mode }) => {
   const allowedSites = parseAllowedSites(env.ALLOWED_SITES);
 
   return {
+    define: {
+      'import.meta.env.VITE_ACCEPTANCE_CRITERIA_IGNORE_PATTERN': JSON.stringify(
+        env.VITE_ACCEPTANCE_CRITERIA_IGNORE_PATTERN ?? '',
+      ),
+      'import.meta.env.VITE_IGNORED_MODEL_PROVIDERS': JSON.stringify(
+        env.VITE_IGNORED_MODEL_PROVIDERS ?? '',
+      ),
+    },
     plugins: [
       react(),
       manifestAllowedSitesPlugin(allowedSites.length > 0 ? allowedSites : DEFAULT_ALLOWED_SITES),

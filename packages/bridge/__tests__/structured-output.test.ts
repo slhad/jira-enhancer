@@ -95,7 +95,7 @@ describe('parseSubtaskGenerationOutput', () => {
           id: 'custom-id',
           title: 'Optional docs',
           description: 'Update docs if behavior changes.',
-          category: 'other',
+          category: 'unknown',
           required: false,
           rationale: 'Only needed for external behavior.',
         },

@@ -451,6 +451,60 @@ describe('LLM adapters', () => {
     expect(events.map((event) => event.text).join('\n')).toContain('Pi turn produced');
   });
 
+  it('finishes Pi RPC when the final assistant text ends before agent_end', async () => {
+    let closeRequested = false;
+    const pm = {
+      spawnWithTimeout: vi
+        .fn()
+        .mockImplementation(async (_command, _args, _input, _timeout, _env, _cwd, handlers) => {
+          closeRequested = handlers.onStdout(
+            `${JSON.stringify({
+              type: 'message_update',
+              assistantMessageEvent: { type: 'text_end', content: structuredJson },
+            })}\n`,
+          );
+          return { stdout: '', stderr: '', exitCode: 0 };
+        }),
+    } as unknown as ProcessManager;
+    const adapter = new PiAdapter(pm);
+
+    const result = await adapter.refine('/repo', fields, undefined, 5678);
+
+    expect(closeRequested).toBe(true);
+    expect(result.description).toBe('better');
+  });
+
+  it('shows Pi tool call details when the RPC event includes arguments', async () => {
+    const pm = {
+      spawnWithTimeout: vi
+        .fn()
+        .mockImplementation(async (_command, _args, _input, _timeout, _env, _cwd, handlers) => {
+          handlers.onStdout(
+            `${JSON.stringify({
+              type: 'tool_execution_start',
+              toolName: 'bash',
+              args: { command: 'git status --short' },
+            })}\n`,
+          );
+          handlers.onStdout(
+            `${JSON.stringify({
+              type: 'agent_end',
+              messages: [{ role: 'assistant', content: [{ type: 'text', text: structuredJson }] }],
+            })}\n`,
+          );
+          return { stdout: '', stderr: '', exitCode: 0 };
+        }),
+    } as unknown as ProcessManager;
+    const adapter = new PiAdapter(pm);
+    const events: Array<{ text?: string }> = [];
+
+    await adapter.refine('/repo', fields, undefined, 5678, undefined, (event) =>
+      events.push(event),
+    );
+
+    expect(events.map((event) => event.text).join('\n')).toContain('git status --short');
+  });
+
   it('uses captured Pi final output if the process exits after agent_end', async () => {
     const pm = {
       spawnWithTimeout: vi
