@@ -726,7 +726,11 @@ function appendPreviewDebugLog(source: string, payload: unknown): void {
   });
 }
 
-function setSubtaskPreviewBannerInPage(parentIssueKey: string, subtasks: GeneratedSubtask[]): void {
+function setSubtaskPreviewBannerInPage(
+  parentIssueKey: string,
+  subtasks: GeneratedSubtask[],
+  canCreateSubtasks: boolean,
+): void {
   document.getElementById('jira-enhancer-subtask-preview-banner')?.remove();
   const banner = document.createElement('div');
   banner.id = 'jira-enhancer-subtask-preview-banner';
@@ -755,7 +759,9 @@ function setSubtaskPreviewBannerInPage(parentIssueKey: string, subtasks: Generat
   const title = document.createElement('strong');
   title.textContent = `Jira Enhancer sub-task preview for ${parentIssueKey}`;
   const status = document.createElement('div');
-  status.textContent = `${subtasks.length} kept sub-task${subtasks.length === 1 ? '' : 's'} ready to create.`;
+  status.textContent = canCreateSubtasks
+    ? `${subtasks.length} kept sub-task${subtasks.length === 1 ? '' : 's'} ready to create.`
+    : `${subtasks.length} kept sub-task${subtasks.length === 1 ? '' : 's'} previewed. Creation is disabled until real Jira sub-task types are loaded and selected.`;
   status.style.marginTop = '6px';
   status.style.color = '#5e6c84';
   status.style.fontSize = '12px';
@@ -875,7 +881,7 @@ function setSubtaskPreviewBannerInPage(parentIssueKey: string, subtasks: Generat
     create.style.cursor = 'default';
     list.remove();
   });
-  actions.appendChild(create);
+  if (canCreateSubtasks) actions.appendChild(create);
   banner.append(header, status, list, actions);
   document.body.appendChild(banner);
 }
@@ -2274,13 +2280,21 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
     [editedSubtasks],
   );
 
+  const invalidKeptSubtaskTypes = keptEditedSubtasks.filter(
+    (subtask) => !availableSubtaskCategories.includes(subtask.category),
+  );
+  const canCreateKeptSubtasks =
+    keptEditedSubtasks.length > 0 &&
+    availableSubtaskCategories.length > 0 &&
+    invalidKeptSubtaskTypes.length === 0;
+
   const previewSubtasksInSourceTab = (subtasks = keptEditedSubtasks) => {
     if (!issueKey || activeTabId === null || subtasks.length === 0) return;
     chrome.scripting.executeScript(
       {
         target: { tabId: activeTabId },
         func: setSubtaskPreviewBannerInPage,
-        args: [issueKey, subtasks],
+        args: [issueKey, subtasks, canCreateKeptSubtasks],
       },
       () => focusSourceTab(activeTabId),
     );
@@ -2288,6 +2302,16 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
 
   const createSubtasksWithJiraApi = async (subtasks = keptEditedSubtasks) => {
     if (!issueKey || !activeTabUrl || subtasks.length === 0) return;
+    if (!canCreateKeptSubtasks) {
+      setApplyStatus(
+        availableSubtaskCategories.length === 0
+          ? 'Jira sub-task creation is disabled because real Jira sub-task issue types could not be loaded.'
+          : `Choose a valid Jira sub-task type before creating. Invalid: ${invalidKeptSubtaskTypes
+              .map((subtask) => subtask.category || 'Unassigned')
+              .join(', ')}`,
+      );
+      return;
+    }
     setApplyStatus(`Creating ${subtasks.length} Jira sub-task${subtasks.length === 1 ? '' : 's'}…`);
     const { origin, hostname } = new URL(activeTabUrl);
     const isCloud = hostname.endsWith('.atlassian.net');
@@ -2970,7 +2994,13 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
             {availableSubtaskCategories.length === 0 && (
               <div className="description-read-status">
                 Jira sub-task types could not be loaded, so generated categories may be fallback
-                labels such as copilotQuality instead of real Jira sub-task types.
+                labels such as copilotQuality instead of real Jira sub-task types. Jira creation is
+                disabled until real sub-task issue types are available.
+              </div>
+            )}
+            {availableSubtaskCategories.length > 0 && invalidKeptSubtaskTypes.length > 0 && (
+              <div className="description-read-status">
+                Select a valid Jira sub-task type for every kept item before creating them in Jira.
               </div>
             )}
             <div className="field-review-grid subtask-review-grid">
@@ -3167,7 +3197,12 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
                 type="button"
                 className="btn btn-default"
                 onClick={() => void createSubtasksWithJiraApi()}
-                disabled={keptEditedSubtasks.length === 0}
+                disabled={!canCreateKeptSubtasks}
+                title={
+                  canCreateKeptSubtasks
+                    ? 'Create selected sub-tasks in Jira'
+                    : 'Requires loaded Jira sub-task issue types and valid selected categories'
+                }
               >
                 Create kept sub-tasks
               </button>

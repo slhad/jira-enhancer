@@ -60,6 +60,11 @@ function isFinalResponse(msg: ExtensionMessage): boolean {
   );
 }
 
+function isExtensionPageSender(sender: chrome.runtime.MessageSender): boolean {
+  const extensionRoot = chrome.runtime.getURL('');
+  return Boolean(sender.url?.startsWith(extensionRoot));
+}
+
 function deliverResponse(target: PendingRequest, msg: ExtensionMessage): void {
   if (target.kind === 'tab') {
     chrome.tabs.sendMessage(target.tabId, msg);
@@ -168,6 +173,18 @@ chrome.runtime.onMessage.addListener(
     ) {
       if (message.type === MessageType.LIST_MODELS_REQUEST) {
         pendingRequests.set(message.id, { kind: 'runtime', sendResponse });
+      } else if (
+        (message.type === MessageType.ENHANCE_REQUEST ||
+          message.type === MessageType.GENERATE_SUBTASKS_REQUEST) &&
+        isExtensionPageSender(sender)
+      ) {
+        pendingRequests.set(message.id, { kind: 'runtime-broadcast' });
+        sendResponse({
+          type: MessageType.STATUS,
+          id: message.id,
+          status: 'processing',
+          progress: undefined,
+        });
       } else if (sender.tab?.id !== undefined) {
         pendingRequests.set(message.id, { kind: 'tab', tabId: sender.tab.id });
       } else if (

@@ -48,6 +48,7 @@ function resetChromeMocks() {
   (globalThis as Record<string, unknown>).chrome = {
     runtime: {
       connectNative: vi.fn(() => mockPort),
+      getURL: vi.fn((path = '') => `chrome-extension://extension-id/${path}`),
       onMessage: runtimeOnMessage,
       onInstalled: runtimeOnInstalled,
       sendMessage: vi.fn(),
@@ -387,6 +388,42 @@ describe('background service worker', () => {
     portOnMessage.fire(response);
 
     expect(sendResponse).toHaveBeenCalledWith(response);
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(42, response);
+  });
+
+  it('broadcasts full-page subtask generation responses to extension runtime listeners', async () => {
+    await import('../src/background/background.js');
+
+    const message = {
+      type: MessageType.GENERATE_SUBTASKS_REQUEST,
+      id: 'full-page-subtasks',
+      issueKey: 'PROJ-123',
+      fields: { description: 'desc' },
+      provider: 'opencode',
+    };
+    const response = {
+      type: MessageType.GENERATE_SUBTASKS_RESPONSE,
+      id: 'full-page-subtasks',
+      result: { issueKey: 'PROJ-123', subtasks: [] },
+    };
+    const sendResponse = vi.fn();
+    runtimeOnMessage.fire(
+      message,
+      {
+        tab: { id: 42 } as chrome.tabs.Tab,
+        url: 'chrome-extension://extension-id/src/full-page/index.html',
+      },
+      sendResponse,
+    );
+    portOnMessage.fire(response);
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      type: MessageType.STATUS,
+      id: 'full-page-subtasks',
+      status: 'processing',
+      progress: undefined,
+    });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(response);
     expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(42, response);
   });
 
