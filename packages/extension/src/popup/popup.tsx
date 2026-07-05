@@ -1832,6 +1832,7 @@ export function Popup({ fullPage = false }: PopupProps = {}) {
         reuseSession,
         titleOnly,
         subtaskCategories,
+        titleMaxLength,
       );
     },
     [
